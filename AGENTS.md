@@ -1,0 +1,111 @@
+# Repository instructions
+
+## Scope
+
+These instructions apply to the entire `lm-from-zero` repository. Follow the
+workspace-level instructions as well; this file is authoritative for
+project-specific commands and conventions.
+
+## Project purpose
+
+Build language models from first principles in the milestone order documented
+in `plans/01-lm-from-zero.md`. Keep the dense OLMo2-compatible vertical slice
+as the production path. Mamba-2 and masked diffusion remain later,
+compute-matched research tracks.
+
+## Setup
+
+- Primary environment: the `Ubuntu-24.04` WSL2 distro with Python 3.12. The
+  separate distro named `Ubuntu` does not currently provide `uv`.
+- Keep the main environment at `.venv` and any future vLLM environment at
+  `.venv-vllm`.
+- Use `uv` for environment creation, dependency locking, and command execution.
+- Do not install or update dependencies, create environments, download data,
+  create caches, or change host tooling without explicit user confirmation.
+- Never install Python packages globally.
+- Keep the default development and test path CPU-only and offline.
+
+Create and synchronize the approved environment with:
+
+```bash
+uv venv --python 3.12 .venv
+uv sync --frozen --all-groups --link-mode copy
+```
+
+`--link-mode copy` avoids cross-filesystem hard-link warnings between the WSL
+cache and the repository on the Windows-mounted filesystem.
+
+## Commands
+
+Full verification:
+
+```bash
+PYTHONPATH=src uv run --frozen ruff format --check .
+PYTHONPATH=src uv run --frozen ruff check .
+PYTHONPATH=src uv run --frozen mypy src tests
+PYTHONPATH=src uv run --frozen pytest
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli --help
+```
+
+When the ignored TinyStories sample exists, verify it separately with
+`PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli verify-sample
+data/tinystories/manifest.json`.
+
+Tokenizer training, oracle verification, and benchmark commands are documented
+in `README.md`. The same document contains the deterministic shard build and
+full-build verification commands, plus the dense-model configuration summary.
+Their outputs belong under ignored `artifacts/`; do not copy measured values
+manually into reports.
+
+Dependency-free fallback verification:
+
+```bash
+PYTHONPATH=src python3.12 -m unittest discover -s tests -v
+python3.12 -m compileall -q src tests
+```
+
+Windows CPU fallback:
+
+```powershell
+$env:PYTHONPATH = "src"
+py -3.12 -m unittest discover -s tests -v
+py -3.12 -m compileall -q src tests
+```
+
+## Conventions
+
+- Support Python 3.12 and use complete type annotations on public APIs.
+- Keep core implementations project-owned. Do not import `transformers` in
+  tokenizer training, core models, pretraining, or project-owned post-training
+  losses.
+- Prefer small architecture-specific modules behind explicit shared protocols.
+- Make determinism visible: stable tie-breaks, explicit seeds, canonical JSON,
+  content hashes, and tested resume state.
+- Reject invalid configuration and incompatible artifacts before expensive
+  allocation or training.
+- Use atomic writes for checkpoints, manifests, tokenizer models, and other
+  stateful artifacts.
+- Keep GPU, network, hosted-service, and publication paths optional.
+- Add tests with behavior. Include negative-path and corruption tests where
+  serialized state or training recovery is involved.
+- Do not type measured results into reports; generate them from recorded data.
+
+## Data and artifact policy
+
+- Raw datasets, token shards, caches, checkpoints, exports, GGUF files, logs,
+  and local environments stay outside Git.
+- Never commit secrets, account data, private prompts, personal paths, or
+  identifying metadata.
+- Record public dataset provenance, immutable revisions, licenses, hashes, and
+  filtering decisions in machine-readable manifests.
+
+## Verification
+
+Before declaring a change complete, run the narrow tests for the edited code
+and the full offline CPU suite. When the configured tools exist, also run Ruff,
+strict mypy, pytest, and coverage. Report any command that could not run and
+why.
+
+GPU work must begin with a short smoke test. Long training, downloads, hosted
+compute, external login, publishing, Git pushes, releases, and pull requests
+require explicit user confirmation.

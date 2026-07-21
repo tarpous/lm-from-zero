@@ -1,0 +1,276 @@
+# lm-from-zero
+
+`lm-from-zero` is a from-scratch language-model engineering project covering a
+byte-level BPE tokenizer, deterministic data preparation, three model families,
+resumable training, post-training, export, local inference, and controlled
+experiments.
+
+The implementation follows `../plans/01-lm-from-zero.md`. Work proceeds in
+milestone order, beginning with this runnable dense vertical slice:
+
+> TinyStories -> byte BPE -> checked token shards -> 20M dense model ->
+> resumable checkpoint -> evaluation -> Hugging Face export -> local inference
+
+The repository has completed the checked TinyStories sample, pedagogical 16K
+tokenizer, and deterministic token-shard milestones. The dense 20M model is
+next. No dataset, model weight, or external service is needed for the offline
+test suite.
+
+## Environment
+
+The primary target is the `Ubuntu-24.04` WSL2 distro with Python 3.12 and `uv`.
+The machine also has a distro named `Ubuntu`, but `uv` is not available there.
+From PowerShell, enter the intended distro with:
+
+```powershell
+wsl -d Ubuntu-24.04
+```
+
+CPU development and offline tests must also remain usable on Windows once a
+Windows Python 3.12 runtime is available.
+
+The approved initial toolchain uses a project-local environment:
+
+```bash
+uv venv --python 3.12 .venv
+uv sync --frozen --all-groups --link-mode copy
+```
+
+PyTorch is pinned to the official CUDA 13.0 wheel index through an explicit uv
+source. The index can provide only `torch`; all unrelated dependencies continue
+to resolve from PyPI. CUDA libraries and PyTorch remain inside `.venv` and the
+existing uv cache rather than modifying the host CUDA toolkit.
+
+Do not install project packages globally. Optional vLLM, JAX-CUDA, Mamba oracle,
+llama.cpp, GPU, dataset, and publication workflows will be documented and kept
+separate from the default environment.
+
+## Verification
+
+Run the complete offline CPU quality gate from WSL:
+
+```bash
+PYTHONPATH=src uv run --frozen ruff format --check .
+PYTHONPATH=src uv run --frozen ruff check .
+PYTHONPATH=src uv run --frozen mypy src tests
+PYTHONPATH=src uv run --frozen pytest
+```
+
+Pytest enforces branch coverage of at least 85%.
+
+## Dependency-free fallback
+
+The standard-library suite remains available when dependencies are not synced:
+
+```bash
+PYTHONPATH=src python3.12 -m unittest discover -s tests -v
+python3.12 -m compileall -q src tests
+```
+
+Or on Windows:
+
+```powershell
+$env:PYTHONPATH = "src"
+py -3.12 -m unittest discover -s tests -v
+py -3.12 -m compileall -q src tests
+```
+
+The default verification path performs no network access.
+
+## Implemented
+
+- Fixed special-token IDs 0-7.
+- A deterministic, pure-Python byte-level BPE trainer.
+- Byte vocabulary ordering and merge tie-breaks matching the Hugging Face
+  ByteLevel BPE oracle under identical settings.
+- Byte-exact encoding and decoding with no unknown token.
+- Opt-in special-token parsing so ordinary text cannot silently become control
+  tokens.
+- Canonical, versioned tokenizer serialization and SHA-256 model hashes.
+- Hypothesis fuzz tests and unit tests for arbitrary bytes, Unicode,
+  deterministic merge selection, oracle parity, special-token isolation,
+  validation, and save/load parity.
+- Stable content-hash train/validation/test assignment with duplicate rejection.
+- Atomic little-endian `uint16` token shards with EOS document boundaries,
+  SHA-256 manifests, tokenizer/source provenance, and resumable document cursors.
+- Read-only memory-mapped shard loading with length, checksum, vocabulary,
+  orphan, partial-file, mixed-tokenizer, and cross-shard duplicate checks.
+- Serializable rank-aware stride cursors with no overlap between ranks.
+- A deterministic, size-bounded TinyStories streamer pinned to an immutable Git
+  revision, with exact deduplication counts and per-document, aggregate, and
+  artifact hashes.
+- Incremental indexed BPE training with deterministic replay from atomic
+  checkpoints; full-corpus pair recounts are not required after each merge.
+- Exact full-merge and encoding-ID parity against the Hugging Face Tokenizers
+  Rust oracle.
+- Append-only training, oracle, throughput, and traced-memory benchmark records.
+- A validated OLMo2-compatible dense configuration with canonical config hashes
+  and analytic parameter/FLOP breakdowns.
+- Project-owned RoPE, grouped-query SDPA, flat QK RMSNorm, bias-free SwiGLU,
+  exact post-branch normalization, untied embeddings/output head, shifted causal
+  loss, and dynamic grouped KV caches.
+- CPU behavior tests for causal isolation, padding, cache parity, loss,
+  gradients, runtime validation, and the authoritative 20M parameter count.
+- Validated memory-mapped training windows with stable hash shuffling,
+  disjoint rank partitioning, immutable exact-resume cursors, and deterministic
+  epoch rollover.
+- Auditable AdamW decay/no-decay groups, global gradient clipping, and the
+  pinned 1.5% linear-warmup/cosine-decay learning-rate policy.
+
+## Dense 20M model
+
+The pinned `zero-20m-tinystories` configuration uses five layers, width 384,
+six query heads, two key/value heads, FFN width 1,024, vocabulary 16,000, and a
+1,024-token context. It targets `Olmo2ForCausalLM` export semantics: Q/K and
+branch-output RMSNorm, no pre-norm, and no tied weights.
+
+Validate the exact tokenizer binding, instantiate the model, compare realized
+and analytic parameter counts, and print the canonical configuration summary:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  dense-model-summary artifacts/tokenizers/tinystories-16k/training.json
+```
+
+The command derives every reported value from the checked tokenizer manifest
+and current implementation; measured values are not copied into this README.
+
+Training data and optimizer components currently remain typed Python APIs under
+`lm_from_zero.training`. The runnable pretraining CLI follows the atomic
+Safetensors checkpoint milestone so a run cannot start without the required
+recovery contract.
+
+## TinyStories tokenizer sample
+
+The approved tokenizer sample uses public dataset revision
+`f54c09fd23315a6f9c86f9dc80f725de7d8f9c64`, selects a deduplicated prefix in
+source order, and stops after at least 100,000,000 UTF-8 text bytes. It requires
+no Hugging Face login.
+
+```bash
+HF_HOME=.cache/huggingface \
+HF_DATASETS_CACHE=.cache/huggingface/datasets \
+HF_HUB_DISABLE_TELEMETRY=1 \
+DO_NOT_TRACK=1 \
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  sample-tinystories \
+  --output-directory data/tinystories \
+  --cache-directory .cache/huggingface \
+  --target-text-bytes 100000000 \
+  --max-storage-bytes 1000000000
+```
+
+Both directories are ignored by Git. Verify every document and recorded hash:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli verify-sample \
+  data/tinystories/manifest.json
+```
+
+## Train and verify the 16K tokenizer
+
+Train or resume the required project-owned tokenizer:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli train-tokenizer \
+  data/tinystories/manifest.json \
+  --output-directory artifacts/tokenizers/tinystories-16k \
+  --target-vocab-size 16000 \
+  --min-frequency 2 \
+  --checkpoint-every-merges 250 \
+  --max-corpus-bytes 100000000
+```
+
+Retrain the Rust oracle under identical settings and require exact parity:
+
+```bash
+TOKENIZERS_PARALLELISM=false \
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  verify-tokenizer-oracle \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  data/tinystories/manifest.json \
+  --jsonl-output artifacts/benchmarks/tokenizer_oracle.jsonl
+```
+
+Measure throughput separately from traced Python allocations:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  benchmark-tokenizer \
+  artifacts/tokenizers/tinystories-16k/tokenizer.json \
+  data/tinystories/manifest.json \
+  --max-text-bytes 10000000 \
+  --jsonl-output artifacts/benchmarks/tokenizer_encode.jsonl
+```
+
+Add `--trace-memory` for the allocation-measurement run. Tracing adds enough
+overhead that its throughput is not used as the uninstrumented speed result.
+
+## Token shard construction and verification
+
+Build the deterministic 98/1/1 content-hash splits and atomically publish
+checked 100M-token-cap `uint16` shards:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  build-token-shards \
+  data/tinystories/manifest.json \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  --output-directory artifacts/shards/tinystories-16k
+```
+
+The final directory appears only after the sample, tokenizer lineage, every
+shard checksum, token range, cursor, source-document hash, and cross-split
+deduplication check succeeds. A failed attempt leaves a sibling
+`.tinystories-16k.partial` directory for explicit inspection; it is never
+accepted as training data or silently overwritten.
+
+Validate the complete build before training:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  verify-shard-build artifacts/shards/tinystories-16k/build.json
+```
+
+Validate a completed shard before training:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli verify-shard \
+  artifacts/shards/tinystories-16k/shards/train-00000.json \
+  --tokenizer-hash <sha256> \
+  --vocab-size 16000
+```
+
+Both verification commands are local-only and print checked JSON metadata.
+
+## Repository layout
+
+```text
+src/lm_from_zero/       project-owned implementation
+tests/                  offline CPU tests
+.github/workflows/      locked CPU quality gate
+```
+
+Later milestone directories will be added alongside working behavior rather
+than as empty stubs.
+
+## Approval gates
+
+Explicit confirmation is required before:
+
+- creating an environment or resolving/installing dependencies;
+- downloading datasets, model weights, binaries, or optional oracle packages;
+- creating containers, external volumes, or project caches;
+- running long GPU or hosted jobs;
+- logging into or changing GitHub, Hugging Face, or another external service;
+- publishing artifacts, pushing commits, opening pull requests, or creating
+  releases.
+
+Before each gate, the proposed command, destination, approximate size or cost,
+and purpose must be stated.
+
+## Status
+
+The plan is deliberately larger than a single implementation pass. Measured
+throughput, quality, memory, and compatibility claims will be added only after
+the corresponding runs exist.
