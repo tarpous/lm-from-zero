@@ -145,6 +145,10 @@ class OptimizerStepMetrics(BaseModel):
     learning_rate: Annotated[float, Field(gt=0)]
     gradient_norm: Annotated[float, Field(ge=0)]
     tokens_consumed: Annotated[int, Field(ge=0)]
+    elapsed_seconds: Annotated[float, Field(gt=0)]
+    tokens_per_second: Annotated[float, Field(gt=0)]
+    peak_cuda_memory_allocated_bytes: Annotated[int | None, Field(gt=0)] = None
+    peak_cuda_memory_reserved_bytes: Annotated[int | None, Field(gt=0)] = None
 
 
 class DenseTrainingResult(BaseModel):
@@ -243,6 +247,10 @@ def train_accumulated_step(
     if zero_based_step < 0:
         raise ValueError("optimizer step cannot be negative")
     device = torch.device(config.device)
+    if config.device == "cuda":
+        torch.cuda.synchronize(device)
+        torch.cuda.reset_peak_memory_stats(device)
+    started = time.perf_counter()
     optimizer.zero_grad(set_to_none=True)
     learning_rate = set_learning_rate(
         optimizer,
@@ -264,6 +272,9 @@ def train_accumulated_step(
     if not bool(torch.isfinite(gradient_norm)):
         raise TrainingRunError("gradient norm is not finite")
     optimizer.step()
+    if config.device == "cuda":
+        torch.cuda.synchronize(device)
+    elapsed_seconds = time.perf_counter() - started
     mean_loss = torch.stack(detached_losses).mean()
     return OptimizerStepMetrics(
         optimizer_step=zero_based_step + 1,
@@ -271,6 +282,14 @@ def train_accumulated_step(
         learning_rate=learning_rate,
         gradient_norm=float(gradient_norm),
         tokens_consumed=final_cursor.tokens_consumed,
+        elapsed_seconds=elapsed_seconds,
+        tokens_per_second=config.tokens_per_optimizer_step / elapsed_seconds,
+        peak_cuda_memory_allocated_bytes=(
+            torch.cuda.max_memory_allocated(device) if config.device == "cuda" else None
+        ),
+        peak_cuda_memory_reserved_bytes=(
+            torch.cuda.max_memory_reserved(device) if config.device == "cuda" else None
+        ),
     )
 
 

@@ -182,6 +182,10 @@ class DenseRunnerTests(unittest.TestCase):
 
         self.assertAlmostEqual(large_metrics.loss, accumulated_metrics.loss)
         self.assertEqual(large_metrics.tokens_consumed, 8)
+        self.assertGreater(large_metrics.elapsed_seconds, 0)
+        self.assertGreater(large_metrics.tokens_per_second, 0)
+        self.assertIsNone(large_metrics.peak_cuda_memory_allocated_bytes)
+        self.assertIsNone(large_metrics.peak_cuda_memory_reserved_bytes)
         for large, accumulated in zip(
             large_model.parameters(),
             accumulated_model.parameters(),

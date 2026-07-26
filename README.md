@@ -232,9 +232,11 @@ scheduler and make the checkpoint intentionally incompatible with the real run.
 The runner uses the pinned AdamW and warmup/cosine policy, divides each
 microbatch loss by the accumulation count, clips the resulting global gradient,
 and writes step/checkpoint/resume/completion events to canonical append-only
-JSONL. It saves a final checkpoint even when neither periodic trigger fires.
-Resume rejects a changed training-configuration hash as well as the checkpoint
-binding mismatches documented above.
+JSONL. Every optimizer-step event includes measured elapsed time, effective
+token throughput, and CUDA peak allocated/reserved bytes when applicable. It
+saves a final checkpoint even when neither periodic trigger fires. Resume
+rejects a changed training-configuration hash as well as the checkpoint binding
+mismatches documented above.
 
 Focused offline runner verification:
 
