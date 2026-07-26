@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import torch
@@ -11,6 +14,8 @@ from lm_from_zero.generation.causal import (
     CausalGenerationConfig,
     GenerationError,
     _select_next_tokens,
+    append_generation_record,
+    create_generation_record,
     generate_causal,
 )
 from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
@@ -158,6 +163,31 @@ class NativeCausalGenerationTests(unittest.TestCase):
             CausalGenerationConfig(max_new_tokens=1),
         )
         self.assertTrue(training_model.training)
+
+    def test_generation_record_is_canonical_append_only_evidence(self) -> None:
+        model = _model()
+        prompts = [[1, 8]]
+        result = generate_causal(
+            model,
+            prompts,
+            CausalGenerationConfig(max_new_tokens=1),
+        )
+        record = create_generation_record(
+            result,
+            prompts,
+            model_config_sha256=model.config.config_hash,
+            tokenizer_sha256=model.config.tokenizer_hash,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "generation.jsonl"
+            append_generation_record(path, record)
+            append_generation_record(path, record)
+            lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], record.canonical_json())
+        self.assertEqual(
+            json.loads(lines[0])["prompt_token_sha256"], record.prompt_token_sha256
+        )
 
 
 if __name__ == "__main__":

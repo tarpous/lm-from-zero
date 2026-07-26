@@ -424,6 +424,7 @@ def generate_dense_command(
     device: Annotated[str, typer.Option()] = "cpu",
     allow_raw_special_tokens: Annotated[bool, typer.Option()] = False,
     stream: Annotated[bool, typer.Option()] = False,
+    jsonl_output: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Generate locally from a validated dense checkpoint with native KV caching."""
 
@@ -432,6 +433,8 @@ def generate_dense_command(
     from lm_from_zero.generation import (
         CausalGenerationConfig,
         CausalGenerationEvent,
+        append_generation_record,
+        create_generation_record,
         generate_causal,
     )
     from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
@@ -483,12 +486,23 @@ def generate_dense_command(
                 )
             )
 
+    prompt_ids = tokenizer.encode(prompt)
     result = generate_causal(
         model,
-        [tokenizer.encode(prompt)],
+        [prompt_ids],
         generation_config,
         on_token=emit,
     )
+    if jsonl_output is not None:
+        append_generation_record(
+            jsonl_output,
+            create_generation_record(
+                result,
+                [prompt_ids],
+                model_config_sha256=model_config.config_hash,
+                tokenizer_sha256=tokenizer.model_hash,
+            ),
+        )
     generated = result.generated_token_ids[0]
     typer.echo(
         json.dumps(

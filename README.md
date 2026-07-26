@@ -329,7 +329,8 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli generate-dense \
   --top-p 0.95 \
   --seed 1337 \
   --device cuda \
-  --stream
+  --stream \
+  --jsonl-output artifacts/generations/zero-20m-tinystories.jsonl
 ```
 
 Omit the sampling options and keep `--strategy greedy` for deterministic greedy
@@ -337,7 +338,9 @@ decoding. `--stream` emits one JSON token event per model step followed by the
 complete result. The typed Python API also accepts variable-length prompt
 batches and stops each sequence independently at EOS. `pad`, role, and `mask`
 IDs are suppressed by default; `--allow-raw-special-tokens` is intended only
-for explicit diagnostics.
+for explicit diagnostics. `--jsonl-output` appends a canonical, fsynced record
+containing measured generation results plus model, tokenizer, and prompt-token
+hashes; prompt text itself is not stored.
 
 The command validates every checkpoint payload and the exact tokenizer binding
 before loading the model. It rejects empty prompts, out-of-vocabulary tokens,

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
+from hashlib import sha256
+from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Literal, Self
 
@@ -14,6 +18,7 @@ from torch import Tensor
 from lm_from_zero.models import Olmo2ForCausalLM
 
 DEFAULT_SUPPRESSED_TOKEN_IDS = (0, 3, 4, 5, 7)
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
 class GenerationError(RuntimeError):
@@ -87,6 +92,74 @@ class CausalGenerationResult(BaseModel):
             sort_keys=True,
             separators=(",", ":"),
         )
+
+
+class CausalGenerationRecord(BaseModel):
+    """Canonical provenance wrapper for one completed generation request."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    format: Literal["lm-from-zero-causal-generation"] = "lm-from-zero-causal-generation"
+    format_version: Literal[1] = 1
+    generated_at_utc: datetime
+    model_config_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    tokenizer_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    prompt_token_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    result: CausalGenerationResult
+
+    def canonical_json(self) -> str:
+        """Return deterministic JSON for append-only evidence."""
+
+        return json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+def create_generation_record(
+    result: CausalGenerationResult,
+    prompts: Sequence[Sequence[int]],
+    *,
+    model_config_sha256: str,
+    tokenizer_sha256: str,
+) -> CausalGenerationRecord:
+    """Bind measured generation output to model, tokenizer, and prompt tokens."""
+
+    prompt_payload = json.dumps(
+        [list(prompt) for prompt in prompts],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode()
+    return CausalGenerationRecord(
+        generated_at_utc=datetime.now(UTC),
+        model_config_sha256=model_config_sha256,
+        tokenizer_sha256=tokenizer_sha256,
+        prompt_token_sha256=sha256(prompt_payload).hexdigest(),
+        result=result,
+    )
+
+
+def append_generation_record(
+    path: str | Path,
+    record: CausalGenerationRecord,
+) -> None:
+    """Append and fsync one canonical generation evidence record."""
+
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (record.canonical_json() + "\n").encode()
+    descriptor = os.open(
+        destination,
+        os.O_APPEND | os.O_CREAT | os.O_WRONLY,
+        0o644,
+    )
+    try:
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _validate_prompts(
