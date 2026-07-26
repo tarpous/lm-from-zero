@@ -10,7 +10,12 @@ from time import perf_counter
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
-from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+from tokenizers import (  # type: ignore[import-untyped]
+    Tokenizer,
+    models,
+    pre_tokenizers,
+    trainers,
+)
 
 from lm_from_zero.data import DataValidationError
 from lm_from_zero.sampling import load_sample
@@ -82,7 +87,7 @@ def verify_hugging_face_oracle(
         add_prefix_space=False,
         use_regex=True,
     )
-    trainer = trainers.BpeTrainer(  # type: ignore[no-untyped-call]
+    trainer = trainers.BpeTrainer(
         vocab_size=training.training_config.target_vocab_size,
         min_frequency=training.training_config.min_frequency,
         show_progress=False,

@@ -10,7 +10,12 @@ from typing import cast
 
 from hypothesis import given
 from hypothesis import strategies as st
-from tokenizers import Tokenizer, models, pre_tokenizers, trainers
+from tokenizers import (  # type: ignore[import-untyped]
+    Tokenizer,
+    models,
+    pre_tokenizers,
+    trainers,
+)
 
 from lm_from_zero.tokenizer.bpe import (
     BYTE_TO_TOKEN_ID,
@@ -64,7 +69,7 @@ def _train_hf_oracle(
         add_prefix_space=False,
         use_regex=use_regex,
     )
-    trainer = trainers.BpeTrainer(  # type: ignore[no-untyped-call]
+    trainer = trainers.BpeTrainer(
         vocab_size=vocab_size,
         min_frequency=1,
         show_progress=False,

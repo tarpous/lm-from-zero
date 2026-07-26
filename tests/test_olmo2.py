@@ -184,6 +184,134 @@ class Olmo2Tests(unittest.TestCase):
 
         torch.testing.assert_close(first_logits, second_logits)
 
+    def test_gqa_qk_normalization_and_sdpa_match_manual_reference(self) -> None:
+        config = tiny_config(num_hidden_layers=1)
+        attention = Olmo2Attention(config).eval()
+        hidden_states = torch.randn(2, 5, config.hidden_size)
+        cosine = torch.ones(2, 5, config.head_dim)
+        sine = torch.zeros_like(cosine)
+
+        raw_query = attention.q_proj(hidden_states)
+        raw_key = attention.k_proj(hidden_states)
+        normalized_query = attention.q_norm(raw_query)
+        normalized_key = attention.k_norm(raw_key)
+        expected_query = raw_query.float() * torch.rsqrt(
+            raw_query.float().square().mean(dim=-1, keepdim=True) + config.rms_norm_eps
+        )
+        expected_key = raw_key.float() * torch.rsqrt(
+            raw_key.float().square().mean(dim=-1, keepdim=True) + config.rms_norm_eps
+        )
+        torch.testing.assert_close(normalized_query, expected_query)
+        torch.testing.assert_close(normalized_key, expected_key)
+
+        batch_size, sequence_length, _ = hidden_states.shape
+        query = normalized_query.view(
+            batch_size,
+            sequence_length,
+            config.num_attention_heads,
+            config.head_dim,
+        ).transpose(1, 2)
+        key = normalized_key.view(
+            batch_size,
+            sequence_length,
+            config.num_key_value_heads,
+            config.head_dim,
+        ).transpose(1, 2)
+        value = (
+            attention.v_proj(hidden_states)
+            .view(
+                batch_size,
+                sequence_length,
+                config.num_key_value_heads,
+                config.head_dim,
+            )
+            .transpose(1, 2)
+        )
+        groups = config.num_attention_heads // config.num_key_value_heads
+        repeated_key = key.repeat_interleave(groups, dim=1)
+        repeated_value = value.repeat_interleave(groups, dim=1)
+        scores = torch.matmul(query, repeated_key.transpose(-1, -2))
+        scores = scores / (config.head_dim**0.5)
+        causal = torch.ones(
+            sequence_length,
+            sequence_length,
+            dtype=torch.bool,
+        ).tril()
+        probabilities = torch.softmax(
+            scores.masked_fill(~causal, float("-inf")),
+            dim=-1,
+        )
+        attended = torch.matmul(probabilities, repeated_value)
+        attended = (
+            attended.transpose(1, 2)
+            .contiguous()
+            .view(batch_size, sequence_length, config.hidden_size)
+        )
+        expected_output = attention.o_proj(attended)
+
+        actual_output, cache = attention(
+            hidden_states,
+            cosine,
+            sine,
+            use_cache=True,
+        )
+
+        torch.testing.assert_close(
+            actual_output,
+            expected_output,
+            atol=1e-5,
+            rtol=1e-5,
+        )
+        self.assertIsNotNone(cache)
+        typed_cache = cast(LayerKVCache, cache)
+        self.assertEqual(
+            typed_cache.key.shape,
+            (
+                batch_size,
+                config.num_key_value_heads,
+                sequence_length,
+                config.head_dim,
+            ),
+        )
+        expanded_cache = typed_cache.key.repeat_interleave(groups, dim=1)
+        for head in range(config.num_attention_heads):
+            torch.testing.assert_close(
+                expanded_cache[:, head],
+                typed_cache.key[:, head // groups],
+                rtol=0,
+                atol=0,
+            )
+
+    def test_one_batch_overfits_to_approximately_zero_loss(self) -> None:
+        config = tiny_config(
+            vocab_size=32,
+            num_hidden_layers=1,
+            hidden_size=16,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            intermediate_size=32,
+            max_position_embeddings=8,
+        )
+        model = Olmo2ForCausalLM(config)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=0.05,
+            weight_decay=0.0,
+        )
+        input_ids = torch.tensor([[8, 9, 10, 11, 12, 13]])
+        final_loss = float("inf")
+
+        for _ in range(200):
+            optimizer.zero_grad(set_to_none=True)
+            loss = cast(Tensor, model(input_ids, labels=input_ids).loss)
+            torch.autograd.backward(loss)
+            optimizer.step()
+            final_loss = float(loss.detach())
+            if final_loss < 0.01:
+                break
+
+        self.assertLess(final_loss, 0.01)
+
     def test_left_padding_mask_matches_unpadded_sequence(self) -> None:
         model = Olmo2ForCausalLM(tiny_config()).eval()
         plain = torch.tensor([[8, 9, 10]])

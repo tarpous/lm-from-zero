@@ -12,9 +12,12 @@ milestone order, beginning with this runnable dense vertical slice:
 > resumable checkpoint -> evaluation -> Hugging Face export -> local inference
 
 The repository has completed the checked TinyStories sample, pedagogical 16K
-tokenizer, and deterministic token-shard milestones. The dense 20M model is
-next. No dataset, model weight, or external service is needed for the offline
-test suite.
+tokenizer, deterministic token shards, dense 20M model, deterministic batch and
+optimizer foundations, atomic resumable checkpoints, the single-process dense
+pretraining runner, deterministic checkpoint loss evaluation, and local
+Hugging Face OLMo2 export with parity validation, plus native cached causal
+generation. The first measured training smoke is next. No dataset, model
+weight, or external service is needed for the offline test suite.
 
 ## Environment
 
@@ -40,6 +43,10 @@ PyTorch is pinned to the official CUDA 13.0 wheel index through an explicit uv
 source. The index can provide only `torch`; all unrelated dependencies continue
 to resolve from PyPI. CUDA libraries and PyTorch remain inside `.venv` and the
 existing uv cache rather than modifying the host CUDA toolkit.
+
+Transformers 5.14.1 is used only at the export/comparison boundary. Its declared
+compatibility range requires Tokenizers 0.22.2; core tokenizer training, model
+definitions, pretraining, and objectives do not import Transformers.
 
 Do not install project packages globally. Optional vLLM, JAX-CUDA, Mamba oracle,
 llama.cpp, GPU, dataset, and publication workflows will be documented and kept
@@ -116,6 +123,23 @@ The default verification path performs no network access.
   epoch rollover.
 - Auditable AdamW decay/no-decay groups, global gradient clipping, and the
   pinned 1.5% linear-warmup/cosine-decay learning-rate policy.
+- Atomic, versioned training checkpoints with separate Safetensors model
+  weights, restricted-load recovery state, full artifact hashes, exact data
+  cursors and RNG state, environment/source bindings, lineage, retention, and
+  duplicate-safe step/time triggers.
+- A dry-run-first dense pretraining command with fixed effective batches,
+  gradient accumulation, clipping and scheduling, append-only JSONL events,
+  bounded CPU smoke support, checkpoint resume, and final checkpoint
+  publication.
+- Fixed non-repeating shard evaluation with validated model-only checkpoint
+  loading, causal loss, perplexity, throughput, exact cursors, and canonical
+  append-only JSONL results.
+- Standard local `Olmo2ForCausalLM` export with an explicit complete tensor map,
+  standard tokenizer and generation metadata, internal/HF fp32 and KV-cache
+  parity, atomic publication, and a canonical checksummed provenance manifest.
+- Native dense generation with greedy, temperature, top-k, and top-p decoding;
+  deterministic seeds; variable-length batches; EOS/context handling; default
+  control-token suppression; dense KV reuse; and token-step streaming events.
 
 ## Dense 20M model
 
@@ -135,10 +159,195 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
 The command derives every reported value from the checked tokenizer manifest
 and current implementation; measured values are not copied into this README.
 
-Training data and optimizer components currently remain typed Python APIs under
-`lm_from_zero.training`. The runnable pretraining CLI follows the atomic
-Safetensors checkpoint milestone so a run cannot start without the required
-recovery contract.
+Training data, optimizer, checkpoint, and single-process runner components are
+typed Python APIs under `lm_from_zero.training`. No measured training run has
+been started.
+
+## Training checkpoints
+
+Each published recovery point is an immutable directory under an ignored
+artifact root:
+
+```text
+artifacts/checkpoints/<run>/step-000000000250/
+├── manifest.json
+├── model.safetensors
+└── recovery.pt
+```
+
+`manifest.json` is canonical, versioned JSON. It hashes both payload files and
+binds recovery to the resolved model configuration, architecture, tokenizer,
+shard manifest, rank/world size, dependency versions, hardware facts, Git
+revision/dirty state, optimizer and scheduler progress, exact `BatchCursor`,
+best metric, and parent checkpoint.
+
+`model.safetensors` contains only named model tensors. `recovery.pt` contains
+optimizer, scheduler, optional scaler, and Python/NumPy/Torch CPU/CUDA RNG
+state. Recovery verifies the complete manifest, hashes, binding, model tensor
+names/shapes/dtypes, optimizer layout, and RNG structure before mutating live
+training objects. The recovery payload is loaded with
+`torch.load(weights_only=True)`; despite that restricted loader, accept
+checkpoints only from a trusted training run whose manifest hashes validate.
+
+Saving writes and validates a hidden sibling directory before one atomic rename.
+An interrupted save cannot replace a prior recovery point. Cadence supports
+both every 250 optimizer steps and every 15 minutes without writing one step
+twice. Retention keeps the latest three valid checkpoints plus a distinct valid
+best checkpoint and never removes the sole valid recovery point.
+
+Run the focused checkpoint tests with:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_checkpointing.py --no-cov
+```
+
+## Dense pretraining
+
+`pretrain-dense` validates the complete shard build and prints an auditable
+dry-run plan by default. The plan includes the resolved configuration hashes,
+effective tokens per optimizer step, rounded token budget, analytic training
+FLOPs, estimated checkpoint size, device/precision/compile policy, and optional
+wall-time estimate:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli pretrain-dense \
+  artifacts/shards/tinystories-16k/build.json \
+  --checkpoint-directory artifacts/checkpoints/zero-20m-tinystories \
+  --jsonl-log artifacts/runs/zero-20m-tinystories/events.jsonl \
+  --target-tokens 500000000 \
+  --estimated-tokens-per-second <measured-throughput>
+```
+
+This command does not allocate the model or train unless `--execute` is added.
+Review the dry-run output and obtain explicit approval before using
+`--execute`, even for the full local GPU run. A short bounded CPU/GPU smoke must
+precede that long run.
+
+For a resumable smoke, keep the real target-token configuration and add
+`--stop-after-optimizer-step <step>` with `--execute`. Resume from that
+checkpoint with the same configuration hash and a later bounded step. Do not
+replace this with a tiny total token budget: that would test a different
+scheduler and make the checkpoint intentionally incompatible with the real run.
+
+The runner uses the pinned AdamW and warmup/cosine policy, divides each
+microbatch loss by the accumulation count, clips the resulting global gradient,
+and writes step/checkpoint/resume/completion events to canonical append-only
+JSONL. It saves a final checkpoint even when neither periodic trigger fires.
+Resume rejects a changed training-configuration hash as well as the checkpoint
+binding mismatches documented above.
+
+Focused offline runner verification:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_runner.py --no-cov
+```
+
+This phase is intentionally single-process. Reduced DDP metrics and rank-zero
+coordination, TensorBoard/Parquet generation, and compiled-CUDA resume-tolerance
+measurements remain follow-up work.
+
+## Dense checkpoint evaluation
+
+Evaluate a complete checkpoint on fixed validation batches without restoring
+optimizer or RNG state:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli evaluate-dense \
+  artifacts/checkpoints/zero-20m-tinystories/step-000000000100 \
+  artifacts/shards/tinystories-16k/build.json \
+  --split validation \
+  --sequence-length 1024 \
+  --batch-size 8 \
+  --max-batches 32 \
+  --device cuda \
+  --precision bf16 \
+  --jsonl-output artifacts/evaluations/zero-20m-tinystories.jsonl
+```
+
+Evaluation validates all checkpoint payload hashes and bindings before loading
+the model. It refuses requests that would wrap into another shard epoch and
+therefore repeat validation windows. The result records causal loss,
+perplexity, predicted-token throughput, exact start/end cursors, model/tokenizer
+hashes, and the shard-build hash. Bits-per-byte and downstream task evaluation
+remain later evaluation-harness work.
+
+Focused offline evaluation verification:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_evaluation.py --no-cov
+```
+
+## Dense Hugging Face export
+
+Export a validated dense checkpoint and its exact tokenizer as a standard local
+`Olmo2ForCausalLM` directory:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli export-dense-hf \
+  artifacts/checkpoints/zero-20m-tinystories/step-000000000100 \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  --output-directory artifacts/exports/zero-20m-tinystories
+```
+
+The command validates the complete source checkpoint and tokenizer lineage
+before loading weights. It maps every tensor by an explicit name, rejects
+unknown, missing, duplicate, or shape-incompatible tensors, and requires
+internal/Transformers fp32 logits to match with `atol=1e-5, rtol=1e-5`.
+It then writes `model.safetensors`, standard model/tokenizer/generation
+configuration, tokenizer metadata, and `export_manifest.json` into a hidden
+sibling directory before one atomic rename. The manifest records source hashes,
+the exact tensor map, measured parity error, and SHA-256/size metadata for every
+exported file.
+
+The output directory must not already exist. This workflow is local and offline:
+it does not access the Hugging Face Hub, authenticate, create a repository, or
+publish anything. Hub publication remains a separate approval gate.
+
+Focused offline export, reload, tokenizer, parity, corruption, and interruption
+verification:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_export_hf.py --no-cov
+```
+
+## Native dense generation
+
+Generate from a validated local checkpoint with the project-owned model and KV
+cache:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli generate-dense \
+  artifacts/checkpoints/zero-20m-tinystories/step-000000000100 \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  "Once upon a time" \
+  --max-new-tokens 128 \
+  --strategy sample \
+  --temperature 0.8 \
+  --top-k 50 \
+  --top-p 0.95 \
+  --seed 1337 \
+  --device cuda \
+  --stream
+```
+
+Omit the sampling options and keep `--strategy greedy` for deterministic greedy
+decoding. `--stream` emits one JSON token event per model step followed by the
+complete result. The typed Python API also accepts variable-length prompt
+batches and stops each sequence independently at EOS. `pad`, role, and `mask`
+IDs are suppressed by default; `--allow-raw-special-tokens` is intended only
+for explicit diagnostics.
+
+The command validates every checkpoint payload and the exact tokenizer binding
+before loading the model. It rejects empty prompts, out-of-vocabulary tokens,
+invalid sampling combinations, and requests exceeding the configured context.
+It reports actual model forwards, elapsed time, generated tokens, and measured
+tokens per second. No network or hosted runtime is used.
+
+Focused native generation verification:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_generation.py --no-cov
+```
 
 ## TinyStories tokenizer sample
 

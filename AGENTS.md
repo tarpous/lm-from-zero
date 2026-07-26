@@ -53,9 +53,14 @@ data/tinystories/manifest.json`.
 
 Tokenizer training, oracle verification, and benchmark commands are documented
 in `README.md`. The same document contains the deterministic shard build and
-full-build verification commands, plus the dense-model configuration summary.
-Their outputs belong under ignored `artifacts/`; do not copy measured values
-manually into reports.
+full-build verification commands, the dense-model configuration summary, and
+the focused checkpoint, runner, evaluation, Hugging Face export, and native
+generation test commands. The pretraining command prints a dry-run plan unless
+`--execute` is explicitly supplied.
+Checkpoint evaluation must use fixed non-wrapping shard windows. Checkpoints
+use canonical manifests, separate Safetensors model weights, and
+restricted-load recovery state under ignored `artifacts/`. Do not copy measured
+values manually into reports.
 
 Dependency-free fallback verification:
 
@@ -77,7 +82,7 @@ py -3.12 -m compileall -q src tests
 - Support Python 3.12 and use complete type annotations on public APIs.
 - Keep core implementations project-owned. Do not import `transformers` in
   tokenizer training, core models, pretraining, or project-owned post-training
-  losses.
+  losses. Transformers is allowed only in export, parity, and adapter code.
 - Prefer small architecture-specific modules behind explicit shared protocols.
 - Make determinism visible: stable tie-breaks, explicit seeds, canonical JSON,
   content hashes, and tested resume state.
@@ -85,6 +90,11 @@ py -3.12 -m compileall -q src tests
   allocation or training.
 - Use atomic writes for checkpoints, manifests, tokenizer models, and other
   stateful artifacts.
+- Validate every checkpoint artifact and recovery binding before mutating a
+  live model, optimizer, scaler, or RNG state. Load recovery payloads only
+  through the restricted `torch.load(weights_only=True)` path.
+- Keep pretraining dry-run-first. A short smoke and fresh explicit approval are
+  required before adding `--execute` for a long run.
 - Keep GPU, network, hosted-service, and publication paths optional.
 - Add tests with behavior. Include negative-path and corruption tests where
   serialized state or training recovery is involved.

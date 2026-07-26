@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 
@@ -232,6 +232,274 @@ def dense_model_summary_command(
                 "model_name": config.model_name,
                 "parameters": expected.model_dump(mode="json"),
                 "tokenizer_hash": config.tokenizer_hash,
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@app.command("pretrain-dense")
+def pretrain_dense_command(
+    build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    checkpoint_directory: Annotated[Path, typer.Option()],
+    jsonl_log: Annotated[Path, typer.Option()],
+    target_tokens: Annotated[int, typer.Option(min=1)] = 500_000_000,
+    sequence_length: Annotated[int, typer.Option(min=2)] = 1_024,
+    micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
+    gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
+    learning_rate: Annotated[float, typer.Option(min=1e-12)] = 1e-3,
+    device: Annotated[str, typer.Option()] = "cuda",
+    precision: Annotated[str, typer.Option()] = "bf16",
+    compile_model: Annotated[bool, typer.Option()] = True,
+    estimated_tokens_per_second: Annotated[
+        float | None, typer.Option(min=1e-12)
+    ] = None,
+    resume_from: Annotated[
+        Path | None, typer.Option(exists=True, file_okay=False)
+    ] = None,
+    stop_after_optimizer_step: Annotated[int | None, typer.Option(min=1)] = None,
+    execute: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Plan dense pretraining; execute only after the separate approval gate."""
+
+    from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
+    from lm_from_zero.training import (
+        CausalBatchConfig,
+        DenseTrainer,
+        DenseTrainingConfig,
+        OptimizationConfig,
+        ShardBatchSource,
+        create_dense_run_plan,
+        optimizer_steps_for_token_budget,
+        seed_training,
+    )
+
+    build = validate_shard_build(build_manifest)
+    if build.tokenizer_vocab_size != 16_000:
+        raise DataValidationError("dense TinyStories pretraining requires 16K shards")
+    model_config = Olmo2Config(tokenizer_hash=build.tokenizer_hash)
+    batch_config = CausalBatchConfig(
+        sequence_length=sequence_length,
+        micro_batch_size=micro_batch_size,
+        seed=1_337,
+    )
+    optimizer_steps = optimizer_steps_for_token_budget(
+        target_tokens,
+        sequence_length=sequence_length,
+        micro_batch_size=micro_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+    )
+    training_config = DenseTrainingConfig.model_validate(
+        {
+            "model": model_config,
+            "batch": batch_config,
+            "optimization": OptimizationConfig(
+                learning_rate=learning_rate,
+                total_steps=optimizer_steps,
+            ),
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+            "device": device,
+            "precision": precision,
+            "compile_model": compile_model,
+        }
+    )
+    source = ShardBatchSource(build_manifest, batch_config)
+    plan = create_dense_run_plan(
+        training_config,
+        source,
+        checkpoint_directory,
+        estimated_tokens_per_second=estimated_tokens_per_second,
+    )
+    typer.echo(plan.model_dump_json())
+    if not execute:
+        return
+
+    seed_training(training_config.seed, cuda=training_config.device == "cuda")
+    model = Olmo2ForCausalLM(model_config)
+    trainer = DenseTrainer(
+        model=model,
+        source=source,
+        config=training_config,
+        checkpoint_directory=checkpoint_directory,
+        repository=Path.cwd(),
+        jsonl_log=jsonl_log,
+    )
+    result = trainer.run(
+        resume_from=resume_from,
+        stop_after_optimizer_step=stop_after_optimizer_step,
+    )
+    typer.echo(result.model_dump_json())
+
+
+@app.command("evaluate-dense")
+def evaluate_dense_command(
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    max_batches: Annotated[int, typer.Option(min=1)] = 32,
+    sequence_length: Annotated[int, typer.Option(min=2)] = 1_024,
+    batch_size: Annotated[int, typer.Option(min=1)] = 8,
+    split: Annotated[str, typer.Option()] = "validation",
+    device: Annotated[str, typer.Option()] = "cpu",
+    precision: Annotated[str, typer.Option()] = "fp32",
+    jsonl_output: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Evaluate a validated dense checkpoint on fixed non-repeating shards."""
+
+    from lm_from_zero.evaluation import (
+        CausalEvaluationConfig,
+        append_evaluation_result,
+        evaluate_causal_loss,
+    )
+    from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
+    from lm_from_zero.training import (
+        CausalBatchConfig,
+        ShardBatchSource,
+        load_checkpoint_model,
+        validate_checkpoint,
+    )
+
+    manifest = validate_checkpoint(checkpoint)
+    model_config = Olmo2Config.model_validate(manifest.binding.resolved_model_config)
+    batch_config = CausalBatchConfig.model_validate(
+        {
+            "split": split,
+            "sequence_length": sequence_length,
+            "micro_batch_size": batch_size,
+            "shuffle": False,
+        }
+    )
+    evaluation_config = CausalEvaluationConfig.model_validate(
+        {
+            "max_batches": max_batches,
+            "device": device,
+            "precision": precision,
+        }
+    )
+    source = ShardBatchSource(build_manifest, batch_config)
+    model = Olmo2ForCausalLM(model_config)
+    load_checkpoint_model(
+        checkpoint,
+        model=model,
+        expected_binding=manifest.binding,
+    )
+    result = evaluate_causal_loss(model, source, evaluation_config)
+    if jsonl_output is not None:
+        append_evaluation_result(jsonl_output, result)
+    typer.echo(result.canonical_json())
+
+
+@app.command("export-dense-hf")
+def export_dense_hf_command(
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    tokenizer_training_manifest: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False)
+    ],
+    output_directory: Annotated[Path, typer.Option()],
+) -> None:
+    """Export a validated dense checkpoint as a standard local OLMo2 package."""
+
+    from lm_from_zero.export_hf import export_dense_to_hugging_face
+
+    result = export_dense_to_hugging_face(
+        checkpoint,
+        tokenizer_training_manifest,
+        output_directory,
+    )
+    typer.echo(result.model_dump_json())
+
+
+@app.command("generate-dense")
+def generate_dense_command(
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    tokenizer_training_manifest: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False)
+    ],
+    prompt: Annotated[str, typer.Argument()],
+    max_new_tokens: Annotated[int, typer.Option(min=1)] = 64,
+    strategy: Annotated[Literal["greedy", "sample"], typer.Option()] = "greedy",
+    temperature: Annotated[float, typer.Option(min=1e-12)] = 1.0,
+    top_k: Annotated[int | None, typer.Option(min=1)] = None,
+    top_p: Annotated[float | None, typer.Option(min=1e-12, max=1)] = None,
+    seed: Annotated[int, typer.Option()] = 1337,
+    device: Annotated[str, typer.Option()] = "cpu",
+    allow_raw_special_tokens: Annotated[bool, typer.Option()] = False,
+    stream: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Generate locally from a validated dense checkpoint with native KV caching."""
+
+    import torch
+
+    from lm_from_zero.generation import (
+        CausalGenerationConfig,
+        CausalGenerationEvent,
+        generate_causal,
+    )
+    from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
+    from lm_from_zero.tokenizer.bpe import ByteBPE
+    from lm_from_zero.training import load_checkpoint_model, validate_checkpoint
+
+    checkpoint_manifest = validate_checkpoint(checkpoint)
+    if checkpoint_manifest.binding.architecture != "olmo2":
+        raise DataValidationError(
+            "native dense generation requires an OLMo2 checkpoint"
+        )
+    model_config = Olmo2Config.model_validate(
+        checkpoint_manifest.binding.resolved_model_config
+    )
+    training = load_training_manifest(tokenizer_training_manifest)
+    if (
+        training.status != "complete"
+        or training.tokenizer_hash != checkpoint_manifest.binding.tokenizer_sha256
+    ):
+        raise DataValidationError("tokenizer manifest does not match the checkpoint")
+    tokenizer = ByteBPE.load(
+        tokenizer_training_manifest.parent / training.tokenizer_file
+    )
+    if tokenizer.model_hash != training.tokenizer_hash:
+        raise DataValidationError("tokenizer file does not match its manifest")
+    model = Olmo2ForCausalLM(model_config)
+    load_checkpoint_model(
+        checkpoint,
+        model=model,
+        expected_binding=checkpoint_manifest.binding,
+    )
+    model.to(torch.device(device))
+    generation_config = CausalGenerationConfig(
+        strategy=strategy,
+        max_new_tokens=max_new_tokens,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p,
+        seed=seed,
+        allow_raw_special_tokens=allow_raw_special_tokens,
+    )
+
+    def emit(event: CausalGenerationEvent) -> None:
+        if stream:
+            typer.echo(
+                json.dumps(
+                    {"event": "token", **event.model_dump(mode="json")},
+                    sort_keys=True,
+                )
+            )
+
+    result = generate_causal(
+        model,
+        [tokenizer.encode(prompt)],
+        generation_config,
+        on_token=emit,
+    )
+    generated = result.generated_token_ids[0]
+    typer.echo(
+        json.dumps(
+            {
+                "event": "complete",
+                "generated_text": tokenizer.decode(
+                    generated,
+                    render_special=True,
+                    errors="replace",
+                ),
+                **result.model_dump(mode="json"),
             },
             sort_keys=True,
         )
