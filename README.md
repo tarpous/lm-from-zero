@@ -16,8 +16,12 @@ tokenizer, deterministic token shards, dense 20M model, deterministic batch and
 optimizer foundations, atomic resumable checkpoints, the single-process dense
 pretraining runner, deterministic checkpoint loss evaluation, and local
 Hugging Face OLMo2 export with parity validation, plus native cached causal
-generation. The first measured training smoke is next. No dataset, model
-weight, or external service is needed for the offline test suite.
+generation. A compiled bf16 CUDA smoke on the RTX 4080 SUPER has exercised
+training, checkpoint resume, evaluation, export, and native generation. Its
+generated evidence is committed at
+[`reports/zero-20m-tinystories-smoke.json`](reports/zero-20m-tinystories-smoke.json).
+No dataset, model weight, or external service is needed for the offline test
+suite.
 
 ## Environment
 
@@ -160,8 +164,10 @@ The command derives every reported value from the checked tokenizer manifest
 and current implementation; measured values are not copied into this README.
 
 Training data, optimizer, checkpoint, and single-process runner components are
-typed Python APIs under `lm_from_zero.training`. No measured training run has
-been started.
+typed Python APIs under `lm_from_zero.training`. The four-step run documented
+in the generated smoke report is integration evidence, not a trained model or
+quality result. The 500M-token baseline remains an explicit long-run approval
+boundary.
 
 ## Training checkpoints
 
@@ -353,6 +359,29 @@ Focused native generation verification:
 ```bash
 PYTHONPATH=src uv run --frozen pytest tests/test_generation.py --no-cov
 ```
+
+Generate a compact, portable smoke report only after training, resume,
+evaluation, export, and generation records exist:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  build-dense-smoke-report \
+  artifacts/runs/zero-20m-tinystories-smoke/events.jsonl \
+  artifacts/checkpoints/zero-20m-tinystories-smoke/step-000000000004 \
+  artifacts/evaluations/zero-20m-tinystories-smoke.jsonl \
+  artifacts/exports/zero-20m-tinystories-smoke \
+  artifacts/generations/zero-20m-tinystories-smoke.jsonl \
+  --output reports/zero-20m-tinystories-smoke.json
+```
+
+The builder validates checkpoint contents, clean Git lineage, contiguous
+optimizer steps, resume ancestry, and matching model/tokenizer/shard/checkpoint
+hashes across every input. The committed report is generated from recorded
+artifacts; measured values are not copied manually. It records the resumed
+four-step compiled bf16 CUDA run, evaluation throughput, exact Hugging Face
+fp32 parity, native cached-generation throughput, artifact hashes, and the
+source revision. The intentionally untrained generation output is not treated
+as a quality result.
 
 ## TinyStories tokenizer sample
 

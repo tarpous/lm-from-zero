@@ -20,20 +20,28 @@ later bound without pretending a tiny-budget scheduler is equivalent.
 
 The dependency boundary now pins `safetensors==0.8.0`,
 `transformers==5.14.1`, and the compatible stable `tokenizers==0.22.2`. The
-full offline gate passes 110 tests, strict mypy, Ruff, CLI discovery, lock
-validation, and at least 85% coverage. The existing ignored TinyStories sample,
-16K tokenizer, 23.8M-token shard build, tokenizer/model binding, and 20.159M
-dense configuration were revalidated successfully. WSL sees the RTX 4080 SUPER,
-and the full 500M-token command was checked in dry-run mode only. No new dataset
-or model artifact was downloaded, no training or GPU smoke was run, and nothing
-was committed, pushed, uploaded, or published.
+existing ignored TinyStories sample, 16K tokenizer, 23.8M-token shard build,
+tokenizer/model binding, and 20.159M dense configuration were revalidated
+successfully. WSL sees the RTX 4080 SUPER, and the full 500M-token command was
+checked in dry-run mode. The complete offline gate passes Ruff formatting and
+lint, strict mypy, CLI discovery, lock validation, and 115 tests with 85.92%
+branch coverage.
 
-The next execution boundary is the measured dense training slice. Before a
-long run, use the existing ignored TinyStories/tokenizer/shard artifacts if
-present, verify them, run a short bounded RTX 4080 Super smoke including bf16,
-compile, checkpoint resume, evaluation, export, and native generation, and
-record throughput/memory. A long GPU run, any data download, publication,
-commit, or push still requires its own explicit approval.
+The measured dense integration slice is complete. A compiled bf16 CUDA run
+used the full-run scheduler configuration, stopped at optimizer step 2, resumed
+from that checkpoint through step 4, evaluated one fixed validation batch,
+exported a standard local OLMo2 artifact with exact fp32 parity, and completed
+cached greedy generation. The portable generated evidence, including
+throughput, peak CUDA memory, lineage, source and artifact hashes, lives at
+[`reports/zero-20m-tinystories-smoke.json`](reports/zero-20m-tinystories-smoke.json).
+This is integration evidence only; four optimizer steps do not establish model
+quality.
+
+The next plan work is Milestone 4 training-system completion: reduced DDP
+metrics, rank-zero checkpoint coordination, TensorBoard/JSONL/Parquet logging,
+and measured compiled-CUDA resume tolerance. The 500M-token baseline is still a
+long GPU job and requires a fresh explicit approval. Data downloads,
+publication, and other external changes retain their own approval gates.
 
 ---
 
