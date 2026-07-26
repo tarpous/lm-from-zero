@@ -270,65 +270,75 @@ def pretrain_dense_command(
         OptimizationConfig,
         ShardBatchSource,
         create_dense_run_plan,
+        distributed_session,
         optimizer_steps_for_token_budget,
         seed_training,
     )
 
-    build = validate_shard_build(build_manifest)
-    if build.tokenizer_vocab_size != 16_000:
-        raise DataValidationError("dense TinyStories pretraining requires 16K shards")
-    model_config = Olmo2Config(tokenizer_hash=build.tokenizer_hash)
-    batch_config = CausalBatchConfig(
-        sequence_length=sequence_length,
-        micro_batch_size=micro_batch_size,
-        seed=1_337,
-    )
-    optimizer_steps = optimizer_steps_for_token_budget(
-        target_tokens,
-        sequence_length=sequence_length,
-        micro_batch_size=micro_batch_size,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-    )
-    training_config = DenseTrainingConfig.model_validate(
-        {
-            "model": model_config,
-            "batch": batch_config,
-            "optimization": OptimizationConfig(
-                learning_rate=learning_rate,
-                total_steps=optimizer_steps,
-            ),
-            "gradient_accumulation_steps": gradient_accumulation_steps,
-            "device": device,
-            "precision": precision,
-            "compile_model": compile_model,
-        }
-    )
-    source = ShardBatchSource(build_manifest, batch_config)
-    plan = create_dense_run_plan(
-        training_config,
-        source,
-        checkpoint_directory,
-        estimated_tokens_per_second=estimated_tokens_per_second,
-    )
-    typer.echo(plan.model_dump_json())
-    if not execute:
-        return
+    with distributed_session(device) as distributed:
+        build = validate_shard_build(build_manifest)
+        if build.tokenizer_vocab_size != 16_000:
+            raise DataValidationError(
+                "dense TinyStories pretraining requires 16K shards"
+            )
+        model_config = Olmo2Config(tokenizer_hash=build.tokenizer_hash)
+        batch_config = CausalBatchConfig(
+            sequence_length=sequence_length,
+            micro_batch_size=micro_batch_size,
+            seed=1_337,
+            rank=distributed.rank,
+            world_size=distributed.world_size,
+        )
+        optimizer_steps = optimizer_steps_for_token_budget(
+            target_tokens,
+            sequence_length=sequence_length,
+            micro_batch_size=micro_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            world_size=distributed.world_size,
+        )
+        training_config = DenseTrainingConfig.model_validate(
+            {
+                "model": model_config,
+                "batch": batch_config,
+                "optimization": OptimizationConfig(
+                    learning_rate=learning_rate,
+                    total_steps=optimizer_steps,
+                ),
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "device": device,
+                "precision": precision,
+                "compile_model": compile_model,
+            }
+        )
+        source = ShardBatchSource(build_manifest, batch_config)
+        plan = create_dense_run_plan(
+            training_config,
+            source,
+            checkpoint_directory,
+            estimated_tokens_per_second=estimated_tokens_per_second,
+        )
+        if distributed.is_primary:
+            typer.echo(plan.model_dump_json())
+        if not execute:
+            return
 
-    seed_training(training_config.seed, cuda=training_config.device == "cuda")
-    model = Olmo2ForCausalLM(model_config)
-    trainer = DenseTrainer(
-        model=model,
-        source=source,
-        config=training_config,
-        checkpoint_directory=checkpoint_directory,
-        repository=Path.cwd(),
-        jsonl_log=jsonl_log,
-    )
-    result = trainer.run(
-        resume_from=resume_from,
-        stop_after_optimizer_step=stop_after_optimizer_step,
-    )
-    typer.echo(result.model_dump_json())
+        seed_training(training_config.seed, cuda=training_config.device == "cuda")
+        model = Olmo2ForCausalLM(model_config)
+        trainer = DenseTrainer(
+            model=model,
+            source=source,
+            config=training_config,
+            checkpoint_directory=checkpoint_directory,
+            repository=Path.cwd(),
+            jsonl_log=jsonl_log,
+            distributed=distributed,
+        )
+        result = trainer.run(
+            resume_from=resume_from,
+            stop_after_optimizer_step=stop_after_optimizer_step,
+        )
+        if distributed.is_primary:
+            typer.echo(result.model_dump_json())
 
 
 @app.command("evaluate-dense")

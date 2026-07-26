@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
@@ -27,6 +31,7 @@ from lm_from_zero.training import (
     CausalBatchConfig,
     DenseTrainer,
     DenseTrainingConfig,
+    DistributedContext,
     OptimizationConfig,
     ShardBatchSource,
     TrainingRunError,
@@ -112,15 +117,20 @@ def _training_config(
     )
 
 
-def _cursor(sequences: int) -> BatchCursor:
+def _cursor(
+    sequences: int,
+    *,
+    rank: int = 0,
+    world_size: int = 1,
+) -> BatchCursor:
     return BatchCursor(
         build_manifest_sha256="1" * 64,
         tokenizer_hash="0" * 64,
         split="train",
         sequence_length=4,
         seed=1337,
-        rank=0,
-        world_size=1,
+        rank=rank,
+        world_size=world_size,
         shuffle=True,
         next_local_window=sequences,
         sequences_consumed=sequences,
@@ -136,6 +146,108 @@ def _batch(rows: list[list[int]], before: int, after: int) -> CausalBatch:
         cursor_before=_cursor(before),
         cursor_after=_cursor(after),
     )
+
+
+def _parameter_sha256(model: Olmo2ForCausalLM) -> str:
+    digest = sha256()
+    for name, parameter in model.named_parameters():
+        digest.update(name.encode())
+        digest.update(parameter.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _ddp_runner_worker(
+    rank: int,
+    world_size: int,
+    rendezvous: str,
+    build_path: str,
+    output_root: str,
+) -> None:
+    torch.set_num_threads(1)
+    dist.init_process_group(
+        "gloo",
+        init_method=f"file://{rendezvous}",
+        rank=rank,
+        world_size=world_size,
+    )
+    try:
+        root = Path(output_root)
+        context = DistributedContext.current()
+        batch_config = CausalBatchConfig(
+            sequence_length=4,
+            micro_batch_size=1,
+            seed=23,
+            rank=rank,
+            world_size=world_size,
+        )
+        source = ShardBatchSource(build_path, batch_config)
+        model_config = _model_config(
+            source.build.tokenizer_hash,
+            source.build.tokenizer_vocab_size,
+        )
+        config = _training_config(
+            model_config,
+            batch_config,
+            total_steps=2,
+            accumulation_steps=2,
+        )
+        seed_training(config.seed, cuda=False)
+        first_model = Olmo2ForCausalLM(model_config)
+        first_trainer = DenseTrainer(
+            model=first_model,
+            source=source,
+            config=config,
+            checkpoint_directory=root / "ddp-checkpoints",
+            repository=REPOSITORY,
+            jsonl_log=root / "ddp.jsonl",
+            distributed=context,
+        )
+        first = first_trainer.run(stop_after_optimizer_step=1)
+
+        seed_training(config.seed, cuda=False)
+        resumed_model = Olmo2ForCausalLM(model_config)
+        resumed_trainer = DenseTrainer(
+            model=resumed_model,
+            source=ShardBatchSource(build_path, batch_config),
+            config=config,
+            checkpoint_directory=root / "ddp-checkpoints",
+            repository=REPOSITORY,
+            jsonl_log=root / "ddp.jsonl",
+            distributed=context,
+        )
+        resumed = resumed_trainer.run(resume_from=first.last_checkpoint)
+
+        seed_training(config.seed, cuda=False)
+        uninterrupted_model = Olmo2ForCausalLM(model_config)
+        uninterrupted_trainer = DenseTrainer(
+            model=uninterrupted_model,
+            source=ShardBatchSource(build_path, batch_config),
+            config=config,
+            checkpoint_directory=root / "ddp-uninterrupted-checkpoints",
+            repository=REPOSITORY,
+            jsonl_log=root / "ddp-uninterrupted.jsonl",
+            distributed=context,
+        )
+        uninterrupted_trainer.run()
+        (root / f"rank-{rank}.json").write_text(
+            json.dumps(
+                {
+                    "cursor_rank": resumed.cursor.rank,
+                    "global_tokens": resumed.metrics[-1].tokens_consumed,
+                    "local_tokens": resumed.cursor.tokens_consumed,
+                    "loss": resumed.metrics[-1].loss,
+                    "model_sha256": _parameter_sha256(resumed_model),
+                    "uninterrupted_model_sha256": _parameter_sha256(
+                        uninterrupted_model
+                    ),
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        dist.barrier()
+    finally:
+        dist.destroy_process_group()
 
 
 class DenseRunnerTests(unittest.TestCase):
@@ -193,6 +305,135 @@ class DenseRunnerTests(unittest.TestCase):
         ):
             torch.testing.assert_close(large, accumulated, atol=1e-7, rtol=1e-6)
 
+    def test_distributed_step_reports_globally_reduced_metrics(self) -> None:
+        model_config = _model_config("0" * 64)
+        config = _training_config(
+            model_config,
+            CausalBatchConfig(
+                sequence_length=4,
+                micro_batch_size=1,
+                rank=0,
+                world_size=2,
+            ),
+            accumulation_steps=1,
+        )
+        model = Olmo2ForCausalLM(model_config)
+        optimizer, _ = build_adamw(model, config.optimization)
+        values = torch.tensor([[8, 9, 10, 11]])
+        batch = CausalBatch(
+            input_ids=values,
+            labels=values.clone(),
+            cursor_before=_cursor(0, world_size=2),
+            cursor_after=_cursor(1, world_size=2),
+        )
+        context = DistributedContext(
+            rank=0,
+            world_size=2,
+            local_rank=0,
+            backend="gloo",
+        )
+
+        def reduce(tensor: torch.Tensor, *, op: object) -> None:
+            if op == dist.ReduceOp.SUM:
+                tensor.mul_(2)
+
+        with patch("torch.distributed.all_reduce", side_effect=reduce):
+            metrics = train_accumulated_step(
+                model,
+                optimizer,
+                [batch],
+                config,
+                zero_based_step=0,
+                distributed=context,
+            )
+        self.assertEqual(metrics.tokens_consumed, 8)
+        self.assertEqual(
+            metrics.tokens_per_second,
+            config.tokens_per_optimizer_step / metrics.elapsed_seconds,
+        )
+
+    def test_rank_recovery_and_primary_checkpoint_coordination(self) -> None:
+        model_config = _model_config("0" * 64)
+        config = _training_config(
+            model_config,
+            CausalBatchConfig(
+                sequence_length=4,
+                micro_batch_size=1,
+                rank=1,
+                world_size=2,
+            ),
+            total_steps=2,
+            accumulation_steps=2,
+        )
+        cursor_zero = _cursor(2, rank=0, world_size=2)
+        cursor_one = _cursor(2, rank=1, world_size=2)
+        trainer = object.__new__(DenseTrainer)
+        trainer.config = config
+        trainer.source = cast(
+            Any,
+            SimpleNamespace(initial_cursor=lambda: _cursor(0, rank=1, world_size=2)),
+        )
+        trainer.distributed = DistributedContext(
+            rank=1,
+            world_size=2,
+            local_rank=1,
+            backend="gloo",
+        )
+        rank_one_state = trainer._rank_recovery_state(cursor_one)
+        rank_zero_state = {
+            **rank_one_state,
+            "cursor": cursor_zero.model_dump(mode="json"),
+            "rank": 0,
+        }
+        scheduler_state = trainer._base_scheduler_state(1)
+        scheduler_state["rank_states"] = [rank_zero_state, rank_one_state]
+        restored_cursor = trainer._restore_distributed_state(scheduler_state, 1)
+        self.assertEqual(restored_cursor, cursor_one)
+
+        primary = Mock(spec=DistributedContext)
+        primary.rank = 0
+        primary.world_size = 2
+        primary.is_primary = True
+        primary.enabled = True
+        primary.all_gather_object.return_value = (rank_zero_state, rank_one_state)
+        primary.broadcast_primary_object.return_value = None
+        trainer.distributed = cast(Any, primary)
+        trainer.checkpoint_directory = Path("checkpoints")
+        trainer.model = Olmo2ForCausalLM(model_config)
+        trainer.optimizer, _ = build_adamw(
+            trainer.model,
+            config.optimization,
+        )
+        trainer.binding = Mock()
+        expected_checkpoint = Path("checkpoints/step-000000000001")
+        with (
+            patch(
+                "lm_from_zero.training.runner.save_checkpoint",
+                return_value=expected_checkpoint,
+            ) as save,
+            patch("lm_from_zero.training.runner.apply_checkpoint_retention") as retain,
+        ):
+            checkpoint = trainer._save(
+                optimizer_step=1,
+                cursor=cursor_zero,
+                parent=None,
+            )
+        self.assertEqual(checkpoint, expected_checkpoint)
+        self.assertEqual(
+            len(save.call_args.kwargs["scheduler_state"]["rank_states"]),
+            2,
+        )
+        retain.assert_called_once()
+
+        primary.is_primary = False
+        primary.broadcast_primary_object.return_value = "disk failure"
+        with self.assertRaisesRegex(TrainingRunError, "disk failure"):
+            trainer._save(
+                optimizer_step=1,
+                cursor=cursor_zero,
+                parent=None,
+            )
+
     def test_dry_run_plan_and_configuration_reject_invalid_inputs(self) -> None:
         self.assertEqual(
             optimizer_steps_for_token_budget(
@@ -210,16 +451,37 @@ class DenseRunnerTests(unittest.TestCase):
                 micro_batch_size=1,
                 gradient_accumulation_steps=2,
             )
-        with self.assertRaisesRegex(ValidationError, "single-process"):
-            _training_config(
-                _model_config("0" * 64),
-                CausalBatchConfig(
-                    sequence_length=4,
-                    micro_batch_size=1,
-                    rank=1,
-                    world_size=2,
-                ),
-            )
+        rank_zero = _training_config(
+            _model_config("0" * 64),
+            CausalBatchConfig(
+                sequence_length=4,
+                micro_batch_size=1,
+                rank=0,
+                world_size=2,
+            ),
+        )
+        rank_one = _training_config(
+            _model_config("0" * 64),
+            CausalBatchConfig(
+                sequence_length=4,
+                micro_batch_size=1,
+                rank=1,
+                world_size=2,
+            ),
+        )
+        self.assertEqual(rank_zero.config_hash, rank_one.config_hash)
+        self.assertEqual(rank_zero.local_tokens_per_optimizer_step, 8)
+        self.assertEqual(rank_zero.tokens_per_optimizer_step, 16)
+        self.assertEqual(
+            optimizer_steps_for_token_budget(
+                17,
+                sequence_length=4,
+                micro_batch_size=1,
+                gradient_accumulation_steps=2,
+                world_size=2,
+            ),
+            2,
+        )
         with self.assertRaisesRegex(ValidationError, "CPU compilation"):
             DenseTrainingConfig(
                 model=_model_config("0" * 64),
@@ -333,6 +595,57 @@ class DenseRunnerTests(unittest.TestCase):
                     resume_from=resumed_result.last_checkpoint,
                     stop_after_optimizer_step=2,
                 )
+
+    def test_cpu_ddp_reduces_metrics_and_coordinates_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_path = _shard_build(root)
+            rendezvous = root / "distributed-init"
+            spawn_processes = cast(Any, mp.spawn)  # type: ignore[attr-defined]
+            spawn_processes(
+                _ddp_runner_worker,
+                args=(2, str(rendezvous), str(build_path), str(root)),
+                nprocs=2,
+                join=True,
+            )
+
+            ranks = [
+                json.loads((root / f"rank-{rank}.json").read_text())
+                for rank in range(2)
+            ]
+            self.assertEqual([record["cursor_rank"] for record in ranks], [0, 1])
+            self.assertEqual({record["local_tokens"] for record in ranks}, {16})
+            self.assertEqual({record["global_tokens"] for record in ranks}, {32})
+            self.assertEqual(len({record["loss"] for record in ranks}), 1)
+            self.assertEqual(len({record["model_sha256"] for record in ranks}), 1)
+            self.assertTrue(
+                all(
+                    record["model_sha256"] == record["uninterrupted_model_sha256"]
+                    for record in ranks
+                )
+            )
+
+            records = [
+                json.loads(line)
+                for line in (root / "ddp.jsonl").read_text().splitlines()
+            ]
+            self.assertEqual(
+                [record["event"] for record in records],
+                [
+                    "run_start",
+                    "optimizer_step",
+                    "run_stopped",
+                    "run_resume",
+                    "optimizer_step",
+                    "run_complete",
+                ],
+            )
+            self.assertEqual(records[-1]["tokens_consumed"], 32)
+            manifest = validate_checkpoint(
+                root / "ddp-checkpoints" / "step-000000000002"
+            )
+            self.assertEqual(manifest.binding.rank, 0)
+            self.assertEqual(manifest.binding.world_size, 2)
 
     def test_pretrain_cli_defaults_to_dry_run_and_gates_execution(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -443,6 +443,12 @@ def _capture_rng_state() -> dict[str, Any]:
     }
 
 
+def capture_rng_state() -> dict[str, Any]:
+    """Capture safe rank-local RNG state for coordinated checkpointing."""
+
+    return _capture_rng_state()
+
+
 def _as_dict(value: object, description: str) -> dict[str, Any]:
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise CheckpointError(f"{description} must be a string-keyed dictionary")
@@ -537,6 +543,12 @@ def _restore_rng_state(state: dict[str, Any]) -> None:
     cuda_states = cast(list[Tensor], state["torch_cuda"])
     if torch.cuda.is_available():
         torch.cuda.set_rng_state_all([item.cpu() for item in cuda_states])
+
+
+def restore_rng_state(value: object) -> None:
+    """Validate and restore safe rank-local RNG state."""
+
+    _restore_rng_state(_validate_rng_state(value))
 
 
 def _validate_recovery_payload(

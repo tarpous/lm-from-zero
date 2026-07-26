@@ -119,3 +119,8 @@ why.
 GPU work must begin with a short smoke test. Long training, downloads, hosted
 compute, external login, publishing, Git pushes, releases, and pull requests
 require explicit user confirmation.
+
+The offline runner suite includes a real two-process CPU/Gloo DDP test. DDP
+commands must be launched through `torchrun`; rank zero alone owns logs,
+checkpoint publication, and retention. Keep global token accounting and
+rank-local cursor/RNG recovery covered when changing the runner.

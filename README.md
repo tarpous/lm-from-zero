@@ -13,9 +13,9 @@ milestone order, beginning with this runnable dense vertical slice:
 
 The repository has completed the checked TinyStories sample, pedagogical 16K
 tokenizer, deterministic token shards, dense 20M model, deterministic batch and
-optimizer foundations, atomic resumable checkpoints, the single-process dense
-pretraining runner, deterministic checkpoint loss evaluation, and local
-Hugging Face OLMo2 export with parity validation, plus native cached causal
+optimizer foundations, atomic resumable checkpoints, the single-process and
+DDP dense pretraining runner, deterministic checkpoint loss evaluation, local
+Hugging Face OLMo2 export with parity validation, and native cached causal
 generation. A compiled bf16 CUDA smoke on the RTX 4080 SUPER has exercised
 training, checkpoint resume, evaluation, export, and native generation. Its
 generated evidence is committed at
@@ -131,10 +131,11 @@ The default verification path performs no network access.
   weights, restricted-load recovery state, full artifact hashes, exact data
   cursors and RNG state, environment/source bindings, lineage, retention, and
   duplicate-safe step/time triggers.
-- A dry-run-first dense pretraining command with fixed effective batches,
-  gradient accumulation, clipping and scheduling, append-only JSONL events,
-  bounded CPU smoke support, checkpoint resume, and final checkpoint
-  publication.
+- A dry-run-first dense pretraining command with fixed global effective
+  batches, gradient accumulation, clipping and scheduling, single-process and
+  `torchrun` DDP execution, reduced metrics, rank-zero JSONL/checkpoint
+  ownership, rank-local recovery state, bounded CPU smoke support, checkpoint
+  resume, and final checkpoint publication.
 - Fixed non-repeating shard evaluation with validated model-only checkpoint
   loading, causal loss, perplexity, throughput, exact cursors, and canonical
   append-only JSONL results.
@@ -244,15 +245,46 @@ saves a final checkpoint even when neither periodic trigger fires. Resume
 rejects a changed training-configuration hash as well as the checkpoint binding
 mismatches documented above.
 
+Launch DDP through `torchrun`; each process receives a disjoint deterministic
+rank shard, while the token budget and reported throughput remain global:
+
+```bash
+PYTHONPATH=src uv run --frozen torchrun --standalone --nproc-per-node=2 \
+  -m lm_from_zero.cli pretrain-dense \
+  artifacts/shards/tinystories-16k/build.json \
+  --checkpoint-directory artifacts/checkpoints/ddp-smoke \
+  --jsonl-log artifacts/runs/ddp-smoke/events.jsonl \
+  --target-tokens 32768 \
+  --sequence-length 1024 \
+  --micro-batch-size 1 \
+  --gradient-accumulation-steps 2 \
+  --device cpu \
+  --no-compile-model \
+  --stop-after-optimizer-step 2 \
+  --execute
+```
+
+Only rank zero writes JSONL or publishes and prunes checkpoints. Checkpoint
+timing decisions are broadcast before synchronization, and the restricted-load
+recovery payload stores every rank's exact cursor and safe RNG state. Resume
+restores the common model/optimizer state and then the matching rank-local
+cursor/RNG. Configuration hashes normalize away the process-local rank while
+retaining world size, so a checkpoint cannot resume under a different process
+count. Object collectives exchange only trusted same-run control data and
+plain integer RNG representations; checkpoint loading remains restricted to
+`torch.load(weights_only=True)`.
+
 Focused offline runner verification:
 
 ```bash
 PYTHONPATH=src uv run --frozen pytest tests/test_runner.py --no-cov
 ```
 
-This phase is intentionally single-process. Reduced DDP metrics and rank-zero
-coordination, TensorBoard/Parquet generation, and compiled-CUDA resume-tolerance
-measurements remain follow-up work.
+The runner suite includes a real two-process CPU/Gloo interruption/resume test
+and compares its final parameters bit-exactly with an uninterrupted DDP run. A
+multi-GPU test remains optional and requires separate hosted or additional
+hardware approval. TensorBoard/Parquet generation and compiled-CUDA
+resume-tolerance measurements remain follow-up work.
 
 ## Dense checkpoint evaluation
 
