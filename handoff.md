@@ -182,6 +182,65 @@ The complete post-builder gate passes 175 tests and 12 subtests with 85.49%
 branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
 validation.
 
+### Pause point (July 28, 2026)
+
+The user paused immediately before the bounded diffusion CUDA smoke. No
+`pretrain-diffusion` process is running, and there are no local diffusion
+checkpoint, run, evaluation, export, or generation artifacts yet. The clean
+source revision at the pause is
+`ca8de45bd24e7cec94a52de2cfae5805ed5ea6b5`, synchronized with
+`origin/main`. The live preflight saw `Ubuntu-24.04` under WSL2 and an NVIDIA
+GeForce RTX 4080 SUPER with 16,376 MiB, driver 595.79.
+
+Resume with a short two-stage compiled-bf16 CUDA integration run. Keep the
+default compute-matched full-run token target and scheduler; do **not** pass
+`--target-tokens`. The stop bounds exercise only two and then four optimizer
+steps without pretending that the smoke is quality training.
+
+First run the command without `--execute` and inspect its plan, then add
+`--execute`:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  pretrain-diffusion artifacts/shards/tinystories-16k/build.json \
+  --checkpoint-directory artifacts/checkpoints/zero-20m-diffusion-smoke \
+  --jsonl-log artifacts/runs/zero-20m-diffusion-smoke/events.jsonl \
+  --tensorboard-directory artifacts/runs/zero-20m-diffusion-smoke/tensorboard \
+  --parquet-log artifacts/runs/zero-20m-diffusion-smoke/metrics.parquet \
+  --stop-after-optimizer-step 2
+```
+
+After the bounded first stage succeeds, resume the identical configuration:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  pretrain-diffusion artifacts/shards/tinystories-16k/build.json \
+  --checkpoint-directory artifacts/checkpoints/zero-20m-diffusion-smoke \
+  --jsonl-log artifacts/runs/zero-20m-diffusion-smoke/events.jsonl \
+  --tensorboard-directory artifacts/runs/zero-20m-diffusion-smoke/tensorboard \
+  --parquet-log artifacts/runs/zero-20m-diffusion-smoke/metrics.parquet \
+  --resume-from \
+    artifacts/checkpoints/zero-20m-diffusion-smoke/step-000000000002 \
+  --stop-after-optimizer-step 4 \
+  --execute
+```
+
+The first-stage command also needs `--execute` only after its dry-run output has
+been reviewed. On success, evaluate step 4 with `evaluate-diffusion` on one
+fixed validation batch and seeded corruption, export it with
+`export-diffusion-hf`, generate a short CUDA response with
+`generate-diffusion --response-length 8 --diffusion-steps 8`, and write each
+JSONL record under the matching ignored `artifacts/evaluations`,
+`artifacts/generations`, and export paths. Finally run
+`build-diffusion-smoke-report` to generate
+`reports/zero-20m-diffusion-smoke.json`, rerun the full offline gate, update the
+README/handoff from generated measurements, and commit/push the completed
+Milestone 6 smoke phase.
+
+This smoke is the next action. It is not the long compute-matched architecture
+run: the three-seed screening and full seed-1337 budget remain a fresh explicit
+long-GPU approval boundary.
+
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving
 milestones, every selected model must have a real approved training lineage,
