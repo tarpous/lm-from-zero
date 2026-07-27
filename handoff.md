@@ -43,16 +43,20 @@ throughput, peak CUDA memory, lineage, source and artifact hashes, lives at
 This is integration evidence only; four optimizer steps do not establish model
 quality.
 
-The remaining Milestone 4 work is the bounded measured compiled-CUDA
-interrupted/resumed versus uninterrupted comparison. The generator validates
-canonical logs, clean matching checkpoints, source/runtime/config bindings,
-resume ancestry, complete step metrics, every final model tensor, and declared
-tolerances before publishing a canonical report. The first strict-default pair
-is retained as a non-passing calibration report; a fresh confirmatory pair will
-use the predeclared calibrated thresholds documented in the README. The
-500M-token baseline is still a long GPU job and requires a fresh explicit
-approval. Data downloads, publication, and other external changes retain their
-own approval gates.
+Milestone 4 is complete. The bounded compiled-CUDA interrupted/resumed versus
+uninterrupted comparison validates canonical logs, clean matching checkpoints,
+source/runtime/config bindings, resume ancestry, complete step metrics, every
+final model tensor, and declared tolerances. The first strict-default pair is
+retained as a non-passing calibration report. A fresh confirmatory pair from
+clean revision `1f67477d6c985d308defa7c35c43432620ebb309` passes the predeclared
+calibrated thresholds in
+[`reports/zero-20m-tinystories-resume-tolerance.json`](reports/zero-20m-tinystories-resume-tolerance.json).
+This supports tolerance-equivalent compiled CUDA recovery, not bit-exactness.
+
+The next plan milestone is Milestone 5, the project-owned Mamba-2
+implementation and vertical slice. The 500M-token dense baseline remains a
+long GPU job and requires a fresh explicit approval. Data downloads,
+publication, and other external changes retain their own approval gates.
 
 ---
 

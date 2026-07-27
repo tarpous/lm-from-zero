@@ -338,7 +338,7 @@ configuration. It also checks that the resume event names the final resumed
 checkpoint's parent. The default acceptance thresholds are `atol=1e-5` and
 `rtol=1e-4` for model parameters and `atol=1e-4` for per-step loss. A failing
 comparison still writes its canonical report and exits nonzero. The bounded
-RTX 4080 SUPER measurement remains the final Milestone 4 follow-up.
+RTX 4080 SUPER measurement completes the final Milestone 4 follow-up.
 
 The first bounded pair is retained as calibration evidence at
 [`reports/zero-20m-tinystories-resume-tolerance-calibration.json`](reports/zero-20m-tinystories-resume-tolerance-calibration.json).
@@ -347,6 +347,14 @@ the restore boundary. It is not acceptance evidence. A fresh confirmatory pair
 therefore predeclares `parameter_atol=2e-5`, `parameter_rtol=1e-4`, and
 `loss_atol=2e-4`; these remain small absolute tolerances for compiled bf16
 training and are recorded in the generated validation report.
+
+The fresh confirmatory comparison passes those predeclared thresholds. Its
+portable evidence, including both checkpoint hashes, resume lineage, every
+step-loss difference, aggregate parameter comparison, and source/runtime
+bindings, is generated at
+[`reports/zero-20m-tinystories-resume-tolerance.json`](reports/zero-20m-tinystories-resume-tolerance.json).
+Together with exact CPU and DDP recovery coverage, this completes the training
+system milestone without claiming compiled CUDA is bit-exact.
 
 ## Dense checkpoint evaluation
 
