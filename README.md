@@ -169,6 +169,9 @@ The default verification path performs no network access.
 - A validated 19.959M-parameter masked-diffusion configuration, project-owned
   bidirectional RoPE Transformer, deterministic continuous-time corruption,
   protected-token eligibility, and exact eligible-normalized `1/t` objective.
+- Native iterative diffusion generation and a self-contained Transformers
+  custom-code export with clean-reload logits, loss, tokenizer, and denoising
+  trajectory parity.
 
 ## Dense 20M model
 
@@ -354,9 +357,47 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
 The sampler never mutates prompt tokens, always removes every response mask,
 and reports actual model forwards, total latency, and output throughput.
 `--remask-strategy low_confidence --remask-fraction <fraction>` enables
-revision before the final step. Export and the compiled-CUDA smoke remain later
-Milestone 6 phases. No quality-trained or chat-ready diffusion checkpoint
-exists yet.
+revision before the final step. The compiled-CUDA smoke remains the final
+Milestone 6 phase. No quality-trained or chat-ready diffusion checkpoint exists
+yet.
+
+Export a validated diffusion checkpoint as a self-contained local Transformers
+package:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  export-diffusion-hf \
+  artifacts/checkpoints/zero-20m-diffusion/step-000000000100 \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  --output-directory artifacts/exports/zero-20m-diffusion
+```
+
+The directory contains `model.safetensors`, the exact tokenizer, sampler
+defaults, `hf_diffusion_config.py`, `hf_diffusion_model.py`, and a checksummed
+provenance manifest. Because Transformers has no native class for this
+architecture, local reload explicitly opts into the bundled reviewed code:
+
+```python
+from transformers import AutoModelForMaskedLM
+
+model = AutoModelForMaskedLM.from_pretrained(
+    "artifacts/exports/zero-20m-diffusion",
+    local_files_only=True,
+    trust_remote_code=True,
+)
+```
+
+Export refuses incomplete or mismatched lineage and verifies the cleanly
+reloaded artifact against the internal model for fp32 logits, the weighted
+diffusion loss, and a deterministic denoising trajectory. A persisted derived
+RoPE-frequency buffer keeps parity under Transformers' meta-device loading.
+This command is entirely local; it does not publish to the Hugging Face Hub.
+
+Focused export verification:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_export_diffusion_hf.py --no-cov
+```
 
 ## Training checkpoints
 

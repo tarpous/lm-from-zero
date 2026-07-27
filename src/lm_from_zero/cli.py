@@ -907,6 +907,28 @@ def export_mamba2_hf_command(
     typer.echo(result.model_dump_json())
 
 
+@app.command("export-diffusion-hf")
+def export_diffusion_hf_command(
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    tokenizer_training_manifest: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False)
+    ],
+    output_directory: Annotated[Path, typer.Option()],
+) -> None:
+    """Export diffusion with self-contained Transformers custom code."""
+
+    from lm_from_zero.export_diffusion_hf import (
+        export_diffusion_to_hugging_face,
+    )
+
+    result = export_diffusion_to_hugging_face(
+        checkpoint,
+        tokenizer_training_manifest,
+        output_directory,
+    )
+    typer.echo(result.model_dump_json())
+
+
 @app.command("generate-dense")
 def generate_dense_command(
     checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],

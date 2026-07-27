@@ -146,6 +146,20 @@ The complete post-sampler gate passes 169 tests and 12 subtests with 85.36%
 branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
 validation.
 
+The diffusion Hugging Face phase is implemented locally. It exports a
+self-contained `LLaDAForMaskedDiffusion` package with explicit tensor mapping,
+Safetensors, exact tokenizer metadata, mask/sampler defaults, bundled
+configuration/model source, checksums, and atomic publication. Reload requires
+the documented `trust_remote_code=True` boundary because Transformers has no
+native diffusion class. The exporter reloads the completed temporary artifact
+before publication and requires fp32-logit, eligible-normalized diffusion-loss,
+and deterministic denoising-trajectory parity. A regression test persists the
+derived RoPE frequencies in the export so Transformers meta-device loading
+cannot silently replace the non-checkpoint buffer.
+The complete post-export gate passes 172 tests and 12 subtests with 85.48%
+branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
+validation.
+
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving
 milestones, every selected model must have a real approved training lineage,
