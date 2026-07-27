@@ -411,3 +411,173 @@ class Mamba2Config(BaseModel):
             ssm_flops_per_token=ssm_flops,
             total_flops_per_token=(projection_flops + convolution_flops + ssm_flops),
         )
+
+
+class DiffusionParameterBreakdown(BaseModel):
+    """Exact trainable-parameter accounting for the diffusion denoiser."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    token_embeddings: Annotated[int, Field(ge=0)]
+    attention_projections: Annotated[int, Field(ge=0)]
+    mlp_projections: Annotated[int, Field(ge=0)]
+    normalization_scales: Annotated[int, Field(ge=0)]
+    output_head: Annotated[int, Field(ge=0)]
+    total: Annotated[int, Field(gt=0)]
+
+    @model_validator(mode="after")
+    def validate_total(self) -> Self:
+        components = (
+            self.token_embeddings
+            + self.attention_projections
+            + self.mlp_projections
+            + self.normalization_scales
+            + self.output_head
+        )
+        if components != self.total:
+            raise ValueError("parameter components do not equal the total")
+        return self
+
+
+class DiffusionFlopEstimate(BaseModel):
+    """Analytic denoiser FLOPs under a multiply-add-equals-two policy."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    sequence_length: Annotated[int, Field(gt=0)]
+    projection_flops_per_token: Annotated[int, Field(gt=0)]
+    attention_flops_per_token: Annotated[int, Field(gt=0)]
+    total_flops_per_token: Annotated[int, Field(gt=0)]
+
+    @model_validator(mode="after")
+    def validate_total(self) -> Self:
+        if (
+            self.projection_flops_per_token + self.attention_flops_per_token
+            != self.total_flops_per_token
+        ):
+            raise ValueError("FLOP components do not equal the total")
+        return self
+
+
+class MaskedDiffusionConfig(BaseModel):
+    """Resolved configuration for the project-owned bidirectional denoiser."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    format: Literal["lm-from-zero-model-config"] = "lm-from-zero-model-config"
+    format_version: Literal[1] = 1
+    model_name: Annotated[str, Field(min_length=1)] = "zero-20m-diffusion"
+    architecture: Literal["masked_diffusion"] = "masked_diffusion"
+    objective: Literal["masked_diffusion"] = "masked_diffusion"
+    export_architecture: Literal["MaskedDiffusionForMaskedLM"] = (
+        "MaskedDiffusionForMaskedLM"
+    )
+    normalization: Literal["pre_rms_norm"] = "pre_rms_norm"
+    dtype_policy: Literal["bf16_mixed_fp32_norm_loss"] = "bf16_mixed_fp32_norm_loss"
+    cache_policy: Literal["iterative_canvas_no_cache"] = "iterative_canvas_no_cache"
+    tokenizer_hash: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    special_tokens_hash: Annotated[str, Field(pattern=SHA256_PATTERN)] = Field(
+        default_factory=fixed_special_tokens_hash
+    )
+    vocab_size: Annotated[int, Field(gt=8, le=65536)] = 16_000
+    num_hidden_layers: Annotated[int, Field(gt=0)] = 4
+    hidden_size: Annotated[int, Field(gt=0)] = 384
+    num_attention_heads: Annotated[int, Field(gt=0)] = 6
+    intermediate_size: Annotated[int, Field(gt=0)] = 1_152
+    max_position_embeddings: Annotated[int, Field(gt=0)] = 1_024
+    rope_theta: Annotated[float, Field(gt=0)] = 10_000.0
+    rms_norm_eps: Annotated[float, Field(gt=0)] = 1e-5
+    initializer_range: Annotated[float, Field(gt=0)] = 0.02
+    attention_dropout: Annotated[float, Field(ge=0, lt=1)] = 0.0
+    corruption_epsilon: Annotated[float, Field(gt=0, lt=1)] = 1e-3
+    pad_token_id: Literal[0] = 0
+    bos_token_id: Literal[1] = 1
+    eos_token_id: Literal[2] = 2
+    mask_token_id: Literal[7] = 7
+    tie_word_embeddings: Literal[False] = False
+    time_conditioning: Literal[False] = False
+    use_bias: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_dimensions_and_tokens(self) -> Self:
+        if self.hidden_size % self.num_attention_heads != 0:
+            raise ValueError("hidden_size must be divisible by num_attention_heads")
+        if self.head_dim % 2 != 0:
+            raise ValueError("attention head dimension must be even for RoPE")
+        if self.special_tokens_hash != fixed_special_tokens_hash():
+            raise ValueError("special-token hash does not match the fixed mapping")
+        if (
+            max(
+                self.pad_token_id,
+                self.bos_token_id,
+                self.eos_token_id,
+                self.mask_token_id,
+            )
+            >= self.vocab_size
+        ):
+            raise ValueError("special-token IDs must fit in the vocabulary")
+        return self
+
+    @property
+    def head_dim(self) -> int:
+        """Return the per-head projection width."""
+
+        return self.hidden_size // self.num_attention_heads
+
+    def canonical_json(self) -> str:
+        """Return a deterministic serialized configuration."""
+
+        return json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @property
+    def config_hash(self) -> str:
+        """Return the canonical configuration SHA-256."""
+
+        return sha256(self.canonical_json().encode()).hexdigest()
+
+    def parameter_breakdown(self) -> DiffusionParameterBreakdown:
+        """Compute exact trainable parameters without allocating a model."""
+
+        hidden = self.hidden_size
+        layers = self.num_hidden_layers
+        embeddings = self.vocab_size * hidden
+        attention = layers * 4 * hidden * hidden
+        mlp = layers * 3 * hidden * self.intermediate_size
+        norms = (2 * layers + 1) * hidden
+        output = self.vocab_size * hidden
+        total = embeddings + attention + mlp + norms + output
+        return DiffusionParameterBreakdown(
+            token_embeddings=embeddings,
+            attention_projections=attention,
+            mlp_projections=mlp,
+            normalization_scales=norms,
+            output_head=output,
+            total=total,
+        )
+
+    def forward_flops(self, sequence_length: int) -> DiffusionFlopEstimate:
+        """Estimate one full bidirectional denoiser pass per token."""
+
+        if not 0 < sequence_length <= self.max_position_embeddings:
+            raise ValueError("sequence_length is outside the configured context")
+        parameters = self.parameter_breakdown()
+        projection_parameters = (
+            parameters.attention_projections
+            + parameters.mlp_projections
+            + parameters.output_head
+        )
+        projection_flops = 2 * projection_parameters
+        attention_flops = (
+            4 * self.num_hidden_layers * sequence_length * self.hidden_size
+        )
+        return DiffusionFlopEstimate(
+            sequence_length=sequence_length,
+            projection_flops_per_token=projection_flops,
+            attention_flops_per_token=attention_flops,
+            total_flops_per_token=projection_flops + attention_flops,
+        )

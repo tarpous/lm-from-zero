@@ -7,7 +7,7 @@ from typing import Protocol
 
 from torch import Tensor
 
-from lm_from_zero.models.config import Mamba2Config, Olmo2Config
+from lm_from_zero.models.config import Mamba2Config, MaskedDiffusionConfig, Olmo2Config
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +49,14 @@ class CausalLMOutput:
     cache: CausalCache | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MaskedDiffusionOutput:
+    """Bidirectional denoiser logits and optional masked objective."""
+
+    logits: Tensor
+    loss: Tensor | None = None
+
+
 class CausalLanguageModel(Protocol):
     """Interface consumed by causal training and generation code."""
 
@@ -65,3 +73,21 @@ class CausalLanguageModel(Protocol):
         use_cache: bool = False,
     ) -> CausalLMOutput:
         """Run a causal forward pass."""
+
+
+class MaskedDiffusionModel(Protocol):
+    """Interface consumed by diffusion training and iterative denoising."""
+
+    config: MaskedDiffusionConfig
+
+    def forward(
+        self,
+        input_ids: Tensor,
+        *,
+        attention_mask: Tensor | None = None,
+        position_ids: Tensor | None = None,
+        labels: Tensor | None = None,
+        eligible_mask: Tensor | None = None,
+        time: Tensor | None = None,
+    ) -> MaskedDiffusionOutput:
+        """Run one full bidirectional denoiser pass."""

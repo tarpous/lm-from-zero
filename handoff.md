@@ -108,6 +108,18 @@ diffusion model. The 500M-token dense and 605.5M-token compute-matched Mamba
 runs remain long GPU jobs and require fresh explicit approval. Data downloads,
 publication, and other external changes retain their own approval gates.
 
+Milestone 6's core phase is implemented locally: a resolved
+19.959M-parameter configuration, project-owned four-layer bidirectional RoPE
+Transformer, deterministic continuous-time mask corruption, BOS/padding
+protection with EOS eligibility, guaranteed per-example supervision, and the
+eligible-normalized `1/t` masked objective. Focused tests cover exact
+parameter/FLOP accounting, mask-rate statistics, deterministic corruption,
+direct numerical loss, right-context influence, padding, finite gradients, and
+invalid contracts. The complete post-core gate passes 161 tests with 85.23%
+branch coverage plus formatting, lint, strict typing, CLI discovery, and lock
+validation. The next phase is shared training/checkpoint integration; the
+diffusion sampler, export, and CUDA smoke follow after that.
+
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving
 milestones, every selected model must have a real approved training lineage,

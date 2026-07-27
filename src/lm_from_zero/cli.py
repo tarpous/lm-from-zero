@@ -292,6 +292,46 @@ def mamba2_model_summary_command(
     )
 
 
+@app.command("diffusion-model-summary")
+def diffusion_model_summary_command(
+    training_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+) -> None:
+    """Validate and summarize the pinned 20M TinyStories diffusion model."""
+
+    from lm_from_zero.models import (
+        MaskedDiffusionConfig,
+        MaskedDiffusionForMaskedLM,
+    )
+
+    training = load_training_manifest(training_manifest)
+    if training.status != "complete":
+        raise DataValidationError("tokenizer training must be complete")
+    if training.realized_vocab_size != 16_000:
+        raise DataValidationError("the TinyStories diffusion model requires 16K")
+    config = MaskedDiffusionConfig(tokenizer_hash=training.tokenizer_hash)
+    expected = config.parameter_breakdown()
+    model = MaskedDiffusionForMaskedLM(config)
+    actual = model.trainable_parameter_count()
+    if actual != expected.total:
+        raise DataValidationError("realized model parameters do not match the analysis")
+    typer.echo(
+        json.dumps(
+            {
+                "config_hash": config.config_hash,
+                "context_length": config.max_position_embeddings,
+                "flops": config.forward_flops(
+                    config.max_position_embeddings
+                ).model_dump(mode="json"),
+                "model_name": config.model_name,
+                "parameters": expected.model_dump(mode="json"),
+                "time_conditioning": config.time_conditioning,
+                "tokenizer_hash": config.tokenizer_hash,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 @app.command("pretrain-dense")
 def pretrain_dense_command(
     build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],

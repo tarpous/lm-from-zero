@@ -166,6 +166,9 @@ The default verification path performs no network access.
   B/C and time steps; causal depthwise convolution; official-style negative-A
   and log-uniform time-step initialization; grouped gated RMSNorm; fp32
   residual/SSM state; and constant-size recurrent decoding caches.
+- A validated 19.959M-parameter masked-diffusion configuration, project-owned
+  bidirectional RoPE Transformer, deterministic continuous-time corruption,
+  protected-token eligibility, and exact eligible-normalized `1/t` objective.
 
 ## Dense 20M model
 
@@ -278,6 +281,37 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli generate-mamba2 \
   artifacts/tokenizers/tinystories-16k/training.json \
   "Once upon a time"
 ```
+
+## Masked diffusion 20M core
+
+The pinned `zero-20m-diffusion` denoiser has four layers, width 384, six
+full-attention heads, SwiGLU width 1,152, vocabulary 16,000, and a 1,024-token
+context. It uses pre-RMSNorm, bidirectional RoPE attention, untied embeddings,
+and no time input. The last point is an explicit LLaDA/RADD design choice rather
+than an omitted feature.
+
+Base-pretraining corruption draws one continuous `t` per example from
+`Uniform(1e-3, 1)`, independently masks eligible tokens with probability `t`,
+and deterministically guarantees at least one supervised token. Padding and BOS
+are protected; ordinary content and EOS remain eligible. Loss is masked-token
+cross-entropy weighted by `1/t`, divided by each example's eligible-token count,
+then averaged across non-empty examples.
+
+Validate the tokenizer binding and exact analytic/realized parameter count with:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  diffusion-model-summary artifacts/tokenizers/tinystories-16k/training.json
+```
+
+Run the focused offline core tests with:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_diffusion.py --no-cov
+```
+
+The training lifecycle, iterative sampler, export, and CUDA smoke are subsequent
+Milestone 6 phases. This core alone is not a trained or chat-ready model.
 
 ## Training checkpoints
 
