@@ -1,4 +1,4 @@
-"""Deterministic single-process and DDP dense pretraining."""
+"""Deterministic single-process and DDP causal pretraining."""
 
 from __future__ import annotations
 
@@ -18,7 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor, nn
 from torch.nn.parallel import DistributedDataParallel
 
-from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
+from lm_from_zero.models import (
+    Mamba2Config,
+    Mamba2ForCausalLM,
+    Olmo2Config,
+    Olmo2ForCausalLM,
+)
 from lm_from_zero.training.checkpointing import (
     CheckpointBinding,
     CheckpointCadence,
@@ -121,6 +126,79 @@ class DenseTrainingConfig(BaseModel):
         return sha256(self.canonical_json().encode()).hexdigest()
 
 
+class Mamba2TrainingConfig(BaseModel):
+    """Resolved process-local Mamba-2 training contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    format: Literal["lm-from-zero-mamba2-training"] = "lm-from-zero-mamba2-training"
+    format_version: Literal[1] = 1
+    model: Mamba2Config
+    batch: CausalBatchConfig
+    optimization: OptimizationConfig
+    gradient_accumulation_steps: Annotated[int, Field(gt=0)] = 1
+    checkpoint_every_steps: Annotated[int, Field(gt=0)] = 250
+    checkpoint_every_seconds: Annotated[float, Field(gt=0)] = 15 * 60
+    keep_latest_checkpoints: Annotated[int, Field(gt=0)] = 3
+    device: DeviceKind = "cpu"
+    precision: Precision = "fp32"
+    compile_model: bool = False
+    seed: int = 1_337
+
+    @model_validator(mode="after")
+    def validate_training_contract(self) -> Self:
+        if self.batch.sequence_length > self.model.max_position_embeddings:
+            raise ValueError("batch sequence length exceeds the model context")
+        if self.device == "cpu" and self.compile_model:
+            raise ValueError("CPU compilation is outside the default runner contract")
+        return self
+
+    @property
+    def tokens_per_optimizer_step(self) -> int:
+        """Return the fixed global effective token batch."""
+
+        return self.local_tokens_per_optimizer_step * self.batch.world_size
+
+    @property
+    def local_tokens_per_optimizer_step(self) -> int:
+        """Return the fixed token batch processed by this rank."""
+
+        return (
+            self.batch.sequence_length
+            * self.batch.micro_batch_size
+            * self.gradient_accumulation_steps
+        )
+
+    @property
+    def total_training_tokens(self) -> int:
+        """Return the configured token budget."""
+
+        return self.tokens_per_optimizer_step * self.optimization.total_steps
+
+    def canonical_json(self) -> str:
+        """Return a rank-independent canonical training configuration."""
+
+        payload = self.model_dump(mode="json")
+        batch = cast(dict[str, Any], payload["batch"])
+        batch["rank"] = 0
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @property
+    def config_hash(self) -> str:
+        """Return the resolved training-configuration hash."""
+
+        return sha256(self.canonical_json().encode()).hexdigest()
+
+
+TrainingConfig = DenseTrainingConfig | Mamba2TrainingConfig
+CausalModel = Olmo2ForCausalLM | Mamba2ForCausalLM
+
+
 class DenseRunPlan(BaseModel):
     """Auditable dry-run estimate produced before allocating the model."""
 
@@ -138,6 +216,8 @@ class DenseRunPlan(BaseModel):
     tokens_per_optimizer_step: Annotated[int, Field(gt=0)]
     total_training_tokens: Annotated[int, Field(gt=0)]
     estimated_training_flops: Annotated[int, Field(gt=0)]
+    reference_training_flops: Annotated[int | None, Field(gt=0)] = None
+    training_flop_ratio: Annotated[float | None, Field(gt=0)] = None
     estimated_checkpoint_bytes: Annotated[int, Field(gt=0)]
     estimated_seconds: float | None
     checkpoint_directory: str
@@ -186,9 +266,7 @@ def seed_training(seed: int, *, cuda: bool) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _validate_source_binding(
-    config: DenseTrainingConfig, source: ShardBatchSource
-) -> None:
+def _validate_source_binding(config: TrainingConfig, source: ShardBatchSource) -> None:
     if source.config != config.batch:
         raise TrainingRunError("batch source configuration does not match the run")
     if source.build.tokenizer_hash != config.model.tokenizer_hash:
@@ -198,7 +276,7 @@ def _validate_source_binding(
 
 
 def create_dense_run_plan(
-    config: DenseTrainingConfig,
+    config: TrainingConfig,
     source: ShardBatchSource,
     checkpoint_directory: str | Path,
     *,
@@ -248,7 +326,43 @@ def create_dense_run_plan(
     )
 
 
-def _autocast_context(config: DenseTrainingConfig) -> torch.autocast:
+def create_mamba2_run_plan(
+    config: Mamba2TrainingConfig,
+    source: ShardBatchSource,
+    checkpoint_directory: str | Path,
+    *,
+    estimated_tokens_per_second: float | None = None,
+    jsonl_log: str | Path | None = None,
+    tensorboard_directory: str | Path | None = None,
+    parquet_log: str | Path | None = None,
+    reference_training_flops: int | None = None,
+) -> DenseRunPlan:
+    """Validate and estimate a Mamba-2 run with the common causal policy."""
+
+    plan = create_dense_run_plan(
+        config,
+        source,
+        checkpoint_directory,
+        estimated_tokens_per_second=estimated_tokens_per_second,
+        jsonl_log=jsonl_log,
+        tensorboard_directory=tensorboard_directory,
+        parquet_log=parquet_log,
+    )
+    if reference_training_flops is None:
+        return plan
+    if reference_training_flops <= 0:
+        raise ValueError("reference training FLOPs must be positive")
+    return plan.model_copy(
+        update={
+            "reference_training_flops": reference_training_flops,
+            "training_flop_ratio": (
+                plan.estimated_training_flops / reference_training_flops
+            ),
+        }
+    )
+
+
+def _autocast_context(config: TrainingConfig) -> torch.autocast:
     return torch.autocast(
         device_type=config.device,
         dtype=torch.bfloat16,
@@ -260,7 +374,7 @@ def train_accumulated_step(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     batches: Sequence[CausalBatch],
-    config: DenseTrainingConfig,
+    config: TrainingConfig,
     *,
     zero_based_step: int,
     distributed: DistributedContext | None = None,
@@ -402,15 +516,15 @@ def _restore_portable_rng_state(value: object) -> None:
         raise TrainingRunError("checkpoint rank RNG state is invalid") from error
 
 
-class DenseTrainer:
-    """Run bounded dense pretraining with exact checkpoint resume."""
+class CausalTrainer:
+    """Run bounded causal pretraining with exact checkpoint resume."""
 
     def __init__(
         self,
         *,
-        model: Olmo2ForCausalLM,
+        model: CausalModel,
         source: ShardBatchSource,
-        config: DenseTrainingConfig,
+        config: TrainingConfig,
         checkpoint_directory: str | Path,
         repository: str | Path,
         jsonl_log: str | Path,
@@ -467,7 +581,7 @@ class DenseTrainer:
         self.parquet_log = None if parquet_log is None else Path(parquet_log)
         self.optimizer, _ = build_adamw(self.model, config.optimization)
         self.binding: CheckpointBinding = create_checkpoint_binding(
-            architecture="olmo2",
+            architecture=config.model.architecture,
             resolved_model_config=config.model.model_dump(mode="json"),
             tokenizer_sha256=source.build.tokenizer_hash,
             shard_manifest_sha256=source.build_manifest_sha256,
@@ -768,6 +882,10 @@ class DenseTrainer:
             last_checkpoint=parent,
             metrics=tuple(metrics),
         )
+
+
+DenseTrainer = CausalTrainer
+Mamba2Trainer = CausalTrainer
 
 
 def optimizer_steps_for_token_budget(

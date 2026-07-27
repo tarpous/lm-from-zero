@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from lm_from_zero.generation import CausalGenerationConfig, generate_causal
 from lm_from_zero.models import (
     Mamba2Cache,
     Mamba2Config,
@@ -23,6 +24,7 @@ from lm_from_zero.models.mamba2 import (
     ssd_quadratic_reference,
     ssd_sequential_reference,
 )
+from lm_from_zero.training import OptimizationConfig, build_adamw
 
 
 def tiny_config(**updates: object) -> Mamba2Config:
@@ -323,6 +325,31 @@ class Mamba2Tests(unittest.TestCase):
         self.assertTrue(all(module.bias is None for module in linear_layers))
         self.assertTrue(mixers)
         self.assertTrue(all(mixer.conv1d.bias is not None for mixer in mixers))
+
+    def test_sensitive_ssm_parameters_do_not_receive_weight_decay(self) -> None:
+        model = Mamba2ForCausalLM(tiny_config(num_hidden_layers=1))
+        _, partition = build_adamw(
+            model,
+            OptimizationConfig(total_steps=2),
+        )
+
+        self.assertIn("layers.0.mixer.A_log", partition.no_decay_names)
+        self.assertIn("layers.0.mixer.dt_bias", partition.no_decay_names)
+        self.assertIn("layers.0.mixer.D", partition.no_decay_names)
+        self.assertIn("layers.0.mixer.in_proj.weight", partition.decay_names)
+        self.assertIn("layers.0.mixer.out_proj.weight", partition.decay_names)
+
+    def test_native_batched_generation_uses_recurrent_cache(self) -> None:
+        model = Mamba2ForCausalLM(tiny_config()).eval()
+        result = generate_causal(
+            model,
+            [[8, 9], [8, 9, 10]],
+            CausalGenerationConfig(max_new_tokens=3),
+        )
+
+        self.assertGreaterEqual(result.generated_token_count, 2)
+        self.assertLessEqual(result.model_forwards, 3)
+        self.assertEqual(len(result.generated_token_ids), 2)
 
 
 if __name__ == "__main__":

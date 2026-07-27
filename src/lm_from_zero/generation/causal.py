@@ -1,4 +1,4 @@
-"""Native batched autoregressive generation with dense KV caching."""
+"""Native batched autoregressive generation with architecture-specific caching."""
 
 from __future__ import annotations
 
@@ -9,16 +9,17 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from time import perf_counter
-from typing import Annotated, Literal, Self
+from typing import Annotated, Any, Literal, Self, cast
 
 import torch
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor
 
-from lm_from_zero.models import Olmo2ForCausalLM
+from lm_from_zero.models import Mamba2ForCausalLM, Olmo2ForCausalLM
 
 DEFAULT_SUPPRESSED_TOKEN_IDS = (0, 3, 4, 5, 7)
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
+CausalModel = Olmo2ForCausalLM | Mamba2ForCausalLM
 
 
 class GenerationError(RuntimeError):
@@ -164,7 +165,7 @@ def append_generation_record(
 
 def _validate_prompts(
     prompts: Sequence[Sequence[int]],
-    model: Olmo2ForCausalLM,
+    model: CausalModel,
     config: CausalGenerationConfig,
 ) -> None:
     if not prompts:
@@ -249,7 +250,7 @@ def _select_next_tokens(
 
 
 def generate_causal(
-    model: Olmo2ForCausalLM,
+    model: CausalModel,
     prompts: Sequence[Sequence[int]],
     config: CausalGenerationConfig,
     *,
@@ -276,7 +277,7 @@ def generate_causal(
         model.eval()
         with torch.no_grad():
             for step in range(1, config.max_new_tokens + 1):
-                output = model(
+                output = cast(Any, model)(
                     input_ids,
                     attention_mask=attention_mask,
                     cache=cache,
@@ -284,7 +285,7 @@ def generate_causal(
                 )
                 model_forwards += 1
                 if output.cache is None:
-                    raise GenerationError("causal model did not return a KV cache")
+                    raise GenerationError("causal model did not return a state cache")
                 cache = output.cache
                 active = ~finished
                 selected = _select_next_tokens(

@@ -62,12 +62,21 @@ residual/sensitive state, left-padding behavior, and constant-size recurrent
 cache. The complete offline gate now passes 140 tests with 85.71% branch
 coverage.
 
-The next Milestone 5 phase integrates this model with the shared optimizer,
-checkpoint, dry-run-first training, evaluation, Hugging Face export, and native
-generation paths. Installing the optional `mamba-ssm` oracle remains a separate
-dependency approval gate. The 500M-token dense baseline remains a long GPU job
-and requires a fresh explicit approval. Data downloads, publication, and other
-external changes retain their own approval gates.
+The shared lifecycle phase is also complete: Mamba-2 uses the audited AdamW
+partition, dry-run-first single-process/DDP runner, atomic checkpoint and
+bit-exact CPU resume, canonical telemetry, fixed-window causal evaluation, and
+native batched recurrent generation. Its default dry run derives a complete
+optimizer-step token budget matching the analytic training FLOPs of the
+500M-token dense reference and records the achieved ratio. The complete
+offline gate passes 144 tests with 85.37% branch coverage.
+
+The next Milestone 5 phase is standard Hugging Face Mamba-2 export with explicit
+tensor mapping and internal/HF fp32 and cached-decoding parity, followed by a
+bounded compiled-bf16 CUDA vertical slice. Installing the optional
+`mamba-ssm` oracle remains a separate dependency approval gate. The 500M-token
+dense baseline remains a long GPU job and requires a fresh explicit approval.
+Data downloads, publication, and other external changes retain their own
+approval gates.
 
 ---
 

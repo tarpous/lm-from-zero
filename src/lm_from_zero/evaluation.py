@@ -16,11 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from torch import Tensor
 
 from lm_from_zero.data import Split
-from lm_from_zero.models import Olmo2ForCausalLM
+from lm_from_zero.models import Mamba2ForCausalLM, Olmo2ForCausalLM
 from lm_from_zero.training.data import BatchCursor, ShardBatchSource
 
 DeviceKind = Literal["cpu", "cuda"]
 Precision = Literal["fp32", "bf16"]
+CausalModel = Olmo2ForCausalLM | Mamba2ForCausalLM
 
 
 class EvaluationError(RuntimeError):
@@ -71,7 +72,7 @@ class CausalEvaluationResult(BaseModel):
 
 
 def _validate_evaluation_binding(
-    model: Olmo2ForCausalLM,
+    model: CausalModel,
     source: ShardBatchSource,
     config: CausalEvaluationConfig,
     cursor: BatchCursor,
@@ -93,7 +94,7 @@ def _validate_evaluation_binding(
 
 
 def evaluate_causal_loss(
-    model: Olmo2ForCausalLM,
+    model: CausalModel,
     source: ShardBatchSource,
     config: CausalEvaluationConfig,
     *,

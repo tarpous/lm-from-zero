@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from hashlib import sha256
@@ -18,7 +19,13 @@ from typer.testing import CliRunner
 
 from lm_from_zero.cli import app
 from lm_from_zero.data import SplitPolicy
-from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
+from lm_from_zero.evaluation import CausalEvaluationConfig, evaluate_causal_loss
+from lm_from_zero.models import (
+    Mamba2Config,
+    Mamba2ForCausalLM,
+    Olmo2Config,
+    Olmo2ForCausalLM,
+)
 from lm_from_zero.sampling import SamplingConfig, sample_text_records
 from lm_from_zero.sharding import build_token_shards
 from lm_from_zero.tokenizer.bpe import INITIAL_VOCAB_SIZE
@@ -33,6 +40,8 @@ from lm_from_zero.training import (
     DenseTrainer,
     DenseTrainingConfig,
     DistributedContext,
+    Mamba2Trainer,
+    Mamba2TrainingConfig,
     OptimizationConfig,
     ShardBatchSource,
     TrainingRunError,
@@ -113,6 +122,37 @@ def _training_config(
             gradient_clip_norm=1_000,
         ),
         gradient_accumulation_steps=accumulation_steps,
+        checkpoint_every_steps=10,
+        checkpoint_every_seconds=10_000,
+    )
+
+
+def _mamba2_training_config(
+    tokenizer_hash: str,
+    vocab_size: int,
+    batch: CausalBatchConfig,
+) -> Mamba2TrainingConfig:
+    return Mamba2TrainingConfig(
+        model=Mamba2Config(
+            model_name="runner-mamba2-test",
+            tokenizer_hash=tokenizer_hash,
+            vocab_size=vocab_size,
+            num_hidden_layers=1,
+            hidden_size=16,
+            state_size=4,
+            expand=2,
+            head_dim=8,
+            num_heads=4,
+            num_groups=2,
+            conv_kernel=3,
+            chunk_size=4,
+            max_position_embeddings=8,
+        ),
+        batch=batch,
+        optimization=OptimizationConfig(
+            total_steps=2,
+            gradient_clip_norm=1_000,
+        ),
         checkpoint_every_steps=10,
         checkpoint_every_seconds=10_000,
     )
@@ -604,6 +644,84 @@ class DenseRunnerTests(unittest.TestCase):
                     stop_after_optimizer_step=2,
                 )
 
+    def test_mamba2_runner_checkpoint_resume_is_cpu_bit_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_path = _shard_build(root)
+            batch_config = CausalBatchConfig(
+                sequence_length=4,
+                micro_batch_size=1,
+                seed=31,
+            )
+            source = ShardBatchSource(build_path, batch_config)
+            config = _mamba2_training_config(
+                source.build.tokenizer_hash,
+                source.build.tokenizer_vocab_size,
+                batch_config,
+            )
+
+            seed_training(config.seed, cuda=False)
+            interrupted_model = Mamba2ForCausalLM(config.model)
+            interrupted = Mamba2Trainer(
+                model=interrupted_model,
+                source=source,
+                config=config,
+                checkpoint_directory=root / "mamba2-resumed-checkpoints",
+                repository=REPOSITORY,
+                jsonl_log=root / "mamba2-resumed.jsonl",
+            )
+            first = interrupted.run(stop_after_optimizer_step=1)
+            first_manifest = validate_checkpoint(first.last_checkpoint)
+            self.assertEqual(first_manifest.binding.architecture, "mamba2")
+
+            resumed_model = Mamba2ForCausalLM(config.model)
+            resumed = Mamba2Trainer(
+                model=resumed_model,
+                source=ShardBatchSource(build_path, batch_config),
+                config=config,
+                checkpoint_directory=root / "mamba2-resumed-checkpoints",
+                repository=REPOSITORY,
+                jsonl_log=root / "mamba2-resumed.jsonl",
+            )
+            resumed_result = resumed.run(
+                resume_from=first.last_checkpoint,
+                stop_after_optimizer_step=2,
+            )
+
+            seed_training(config.seed, cuda=False)
+            uninterrupted_model = Mamba2ForCausalLM(config.model)
+            uninterrupted = Mamba2Trainer(
+                model=uninterrupted_model,
+                source=ShardBatchSource(build_path, batch_config),
+                config=config,
+                checkpoint_directory=root / "mamba2-uninterrupted-checkpoints",
+                repository=REPOSITORY,
+                jsonl_log=root / "mamba2-uninterrupted.jsonl",
+            )
+            uninterrupted_result = uninterrupted.run()
+
+            self.assertEqual(resumed_result.optimizer_step, 2)
+            self.assertEqual(uninterrupted_result.optimizer_step, 2)
+            for expected, actual in zip(
+                uninterrupted_model.parameters(),
+                resumed_model.parameters(),
+                strict=True,
+            ):
+                torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+            evaluation_batch = CausalBatchConfig(
+                split="train",
+                sequence_length=4,
+                micro_batch_size=1,
+                shuffle=False,
+            )
+            evaluation = evaluate_causal_loss(
+                resumed_model,
+                ShardBatchSource(build_path, evaluation_batch),
+                CausalEvaluationConfig(max_batches=1),
+            )
+            self.assertEqual(evaluation.model_config_sha256, config.model.config_hash)
+            self.assertTrue(math.isfinite(evaluation.perplexity))
+
     def test_cpu_ddp_reduces_metrics_and_coordinates_resume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -743,6 +861,180 @@ class DenseRunnerTests(unittest.TestCase):
                 rejected = CliRunner().invoke(app, arguments)
             self.assertNotEqual(rejected.exit_code, 0)
             self.assertIsInstance(rejected.exception, Exception)
+
+            mamba_arguments = [
+                "pretrain-mamba2",
+                *arguments[1:],
+            ]
+            with (
+                patch("lm_from_zero.cli.validate_shard_build", return_value=build),
+                patch(
+                    "lm_from_zero.training.ShardBatchSource",
+                    return_value=source,
+                ),
+                patch(
+                    "lm_from_zero.training.create_mamba2_run_plan",
+                    return_value=plan,
+                ),
+            ):
+                mamba_dry_run = CliRunner().invoke(app, mamba_arguments)
+            self.assertEqual(
+                mamba_dry_run.exit_code,
+                0,
+                f"{mamba_dry_run.output}\n{mamba_dry_run.exception!r}",
+            )
+            self.assertEqual(mamba_dry_run.stdout.strip(), '{"planned":true}')
+
+    def test_mamba2_summary_evaluation_and_generation_cli_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "checkpoint"
+            checkpoint.mkdir()
+            build_manifest = root / "build.json"
+            build_manifest.write_text("{}")
+            tokenizer_manifest = root / "training.json"
+            tokenizer_manifest.write_text("{}")
+            tokenizer_hash = "a" * 64
+            config = Mamba2Config(
+                tokenizer_hash=tokenizer_hash,
+                vocab_size=272,
+                num_hidden_layers=1,
+                hidden_size=16,
+                state_size=4,
+                expand=2,
+                head_dim=8,
+                num_heads=4,
+                num_groups=2,
+                conv_kernel=3,
+                chunk_size=4,
+                max_position_embeddings=8,
+            )
+            training_manifest = SimpleNamespace(
+                status="complete",
+                realized_vocab_size=16_000,
+                tokenizer_hash=tokenizer_hash,
+                tokenizer_file="tokenizer.json",
+            )
+
+            pinned_count = (
+                Mamba2Config(tokenizer_hash=tokenizer_hash).parameter_breakdown().total
+            )
+            summary_model = SimpleNamespace(
+                trainable_parameter_count=lambda: pinned_count
+            )
+            with (
+                patch(
+                    "lm_from_zero.cli.load_training_manifest",
+                    return_value=training_manifest,
+                ),
+                patch(
+                    "lm_from_zero.models.Mamba2ForCausalLM",
+                    return_value=summary_model,
+                ),
+            ):
+                summary = CliRunner().invoke(
+                    app,
+                    ["mamba2-model-summary", str(tokenizer_manifest)],
+                )
+            self.assertEqual(summary.exit_code, 0, summary.output)
+            self.assertEqual(
+                json.loads(summary.stdout)["parameters"]["total"], 19_943_164
+            )
+
+            binding = SimpleNamespace(
+                architecture="mamba2",
+                resolved_model_config=config.model_dump(mode="json"),
+                tokenizer_sha256=tokenizer_hash,
+            )
+            manifest = SimpleNamespace(binding=binding)
+            model = Mock()
+            evaluation = SimpleNamespace(canonical_json=lambda: '{"evaluated":true}')
+            with (
+                patch(
+                    "lm_from_zero.training.validate_checkpoint",
+                    return_value=manifest,
+                ),
+                patch("lm_from_zero.training.ShardBatchSource"),
+                patch(
+                    "lm_from_zero.models.Mamba2ForCausalLM",
+                    return_value=model,
+                ),
+                patch("lm_from_zero.training.load_checkpoint_model"),
+                patch(
+                    "lm_from_zero.evaluation.evaluate_causal_loss",
+                    return_value=evaluation,
+                ),
+            ):
+                evaluated = CliRunner().invoke(
+                    app,
+                    [
+                        "evaluate-mamba2",
+                        str(checkpoint),
+                        str(build_manifest),
+                        "--sequence-length",
+                        "4",
+                        "--max-batches",
+                        "1",
+                    ],
+                )
+            self.assertEqual(evaluated.exit_code, 0, evaluated.output)
+            self.assertEqual(evaluated.stdout.strip(), '{"evaluated":true}')
+
+            tokenizer = SimpleNamespace(
+                model_hash=tokenizer_hash,
+                encode=Mock(return_value=[8, 9]),
+                decode=Mock(return_value="generated"),
+            )
+            generated_result = SimpleNamespace(
+                generated_token_ids=((10, 11),),
+                model_dump=lambda mode: {
+                    "prompt_token_counts": [2],
+                    "generated_token_ids": [[10, 11]],
+                    "stop_reasons": ["max_new_tokens"],
+                    "model_forwards": 2,
+                    "generated_token_count": 2,
+                    "elapsed_seconds": 0.1,
+                    "tokens_per_second": 20.0,
+                },
+            )
+            with (
+                patch(
+                    "lm_from_zero.training.validate_checkpoint",
+                    return_value=manifest,
+                ),
+                patch(
+                    "lm_from_zero.cli.load_training_manifest",
+                    return_value=training_manifest,
+                ),
+                patch(
+                    "lm_from_zero.tokenizer.bpe.ByteBPE.load",
+                    return_value=tokenizer,
+                ),
+                patch(
+                    "lm_from_zero.models.Mamba2ForCausalLM",
+                    return_value=model,
+                ),
+                patch("lm_from_zero.training.load_checkpoint_model"),
+                patch(
+                    "lm_from_zero.generation.generate_causal",
+                    return_value=generated_result,
+                ),
+            ):
+                generated = CliRunner().invoke(
+                    app,
+                    [
+                        "generate-mamba2",
+                        str(checkpoint),
+                        str(tokenizer_manifest),
+                        "hello",
+                        "--max-new-tokens",
+                        "2",
+                    ],
+                )
+            self.assertEqual(generated.exit_code, 0, generated.output)
+            self.assertEqual(
+                json.loads(generated.stdout)["generated_text"], "generated"
+            )
 
 
 if __name__ == "__main__":

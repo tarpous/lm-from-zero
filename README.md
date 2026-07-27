@@ -212,6 +212,38 @@ The optional `mamba-ssm` package is not part of the default environment. It
 will be used only as a separately approved numerical oracle and fused-path
 benchmark; the project-owned implementation remains the production reference.
 
+Mamba-2 reuses the shared data stream, AdamW policy, accumulation/DDP loop,
+atomic checkpoint/recovery format, JSONL/TensorBoard/Parquet telemetry, fixed
+causal-loss evaluation, and native sampler. The default dry run derives a token
+budget that matches the analytic training FLOPs of the 500M-token dense
+TinyStories baseline, rounds it to complete optimizer steps, and reports the
+reference FLOPs and achieved ratio:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli pretrain-mamba2 \
+  artifacts/shards/tinystories-16k/build.json \
+  --checkpoint-directory artifacts/checkpoints/zero-20m-mamba2 \
+  --jsonl-log artifacts/runs/zero-20m-mamba2/events.jsonl
+```
+
+`--target-tokens` deliberately overrides compute matching for bounded tests.
+As with dense training, execution requires `--execute`; the full research run
+remains a separate long-GPU approval boundary.
+
+Evaluate or generate from a validated Mamba-2 checkpoint with:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli evaluate-mamba2 \
+  artifacts/checkpoints/zero-20m-mamba2/step-000000000100 \
+  artifacts/shards/tinystories-16k/build.json \
+  --split validation --device cuda --precision bf16
+
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli generate-mamba2 \
+  artifacts/checkpoints/zero-20m-mamba2/step-000000000100 \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  "Once upon a time"
+```
+
 ## Training checkpoints
 
 Each published recovery point is an immutable directory under an ignored
