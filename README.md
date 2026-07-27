@@ -20,8 +20,11 @@ generation. A compiled bf16 CUDA smoke on the RTX 4080 SUPER has exercised
 training, checkpoint resume, evaluation, export, and native generation. Its
 generated evidence is committed at
 [`reports/zero-20m-tinystories-smoke.json`](reports/zero-20m-tinystories-smoke.json).
-The project-owned Mamba-2 core is also implemented and verified on CPU; its
-training/export vertical slice remains the active milestone.
+The project-owned Mamba-2 core and shared lifecycle are also implemented. Its
+compiled bf16 CUDA training/resume, evaluation, parity-safe Hugging Face export,
+and recurrent generation evidence is committed at
+[`reports/zero-20m-mamba2-smoke.json`](reports/zero-20m-mamba2-smoke.json).
+The optional `mamba-ssm` oracle remains a separate dependency approval gate.
 No dataset, model weight, or external service is needed for the offline test
 suite.
 
@@ -533,6 +536,15 @@ Focused atomic export, reload, tokenizer, corruption, and parity verification:
 ```bash
 PYTHONPATH=src uv run --frozen pytest tests/test_export_mamba2_hf.py --no-cov
 ```
+
+The bounded RTX 4080 SUPER vertical slice is recorded in
+[`reports/zero-20m-mamba2-smoke.json`](reports/zero-20m-mamba2-smoke.json).
+It proves a clean two-stage compiled-bf16 run through 32,768 tokens and resumed
+checkpoint lineage, with finite loss/gradients and under 0.9 GB peak reserved
+VRAM. The generated report also binds a fixed validation batch, the full
+19.943M-parameter export, and two-token recurrent generation to the same model,
+tokenizer, shard, checkpoint, and source hashes. This is integration evidence,
+not a trained quality result.
 
 ## Native dense generation
 

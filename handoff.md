@@ -81,11 +81,21 @@ logits and one-token recurrent-cache parity both pass with zero maximum absolute
 error in the small test model. The complete offline gate passes 147 tests with
 85.25% branch coverage.
 
-The next Milestone 5 phase is a bounded compiled-bf16 CUDA vertical slice with
-generated evidence. Installing the optional `mamba-ssm` oracle remains a
-separate dependency approval gate. The 500M-token dense baseline remains a long
-GPU job and requires a fresh explicit approval. Data downloads, publication,
-and other external changes retain their own approval gates.
+The bounded compiled-bf16 CUDA vertical slice is complete on the RTX 4080 SUPER.
+It trained in two stages through step 4 and 32,768 tokens, restored exact
+checkpoint lineage from step 2, kept finite loss/gradients, and stayed below
+0.9 GB peak reserved VRAM. A fixed validation batch reached 2,875 predicted
+tokens/s. The full 19.943M-parameter export passed fp32 full-logit and cached
+parity with maximum absolute errors `1.13e-6` and `8.94e-7`, followed by native
+recurrent generation. All hashes and measurements are generated in
+`reports/zero-20m-mamba2-smoke.json`.
+
+Milestone 5's remaining acceptance item is parity against the optional
+`mamba-ssm` 2.3.2.post1 oracle. Installing that Linux/CUDA package is a separate
+dependency approval gate. The 500M-token dense and 605.5M-token compute-matched
+Mamba runs remain long GPU jobs and require fresh explicit approval. Data
+downloads, publication, and other external changes retain their own approval
+gates.
 
 ---
 
