@@ -11,13 +11,21 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from lm_from_zero.diffusion_evaluation import DiffusionEvaluationResult
 from lm_from_zero.evaluation import CausalEvaluationResult
+from lm_from_zero.export_diffusion_hf import (
+    DiffusionHFExportManifest,
+    load_diffusion_export_manifest,
+)
 from lm_from_zero.export_hf import DenseHFExportManifest, load_export_manifest
 from lm_from_zero.export_mamba2_hf import (
     Mamba2HFExportManifest,
     load_mamba2_export_manifest,
 )
-from lm_from_zero.generation import CausalGenerationRecord
+from lm_from_zero.generation import (
+    CausalGenerationRecord,
+    DiffusionGenerationRecord,
+)
 from lm_from_zero.training import validate_checkpoint
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -99,6 +107,64 @@ class DenseSmokeReport(BaseModel):
         ).encode()
 
 
+class DiffusionSmokeReport(BaseModel):
+    """Portable generated evidence for a diffusion GPU vertical slice."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    format: Literal["lm-from-zero-diffusion-smoke-report"] = (
+        "lm-from-zero-diffusion-smoke-report"
+    )
+    format_version: Literal[1] = 1
+    architecture: Literal["masked_diffusion"] = "masked_diffusion"
+    recorded_at_utc: datetime
+    source_git_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
+    training_config_sha256: Sha256
+    model_config_sha256: Sha256
+    shard_manifest_sha256: Sha256
+    tokenizer_sha256: Sha256
+    checkpoint_id: str = Field(pattern=r"^step-[0-9]{12}$")
+    checkpoint_manifest_sha256: Sha256
+    parent_checkpoint_id: str = Field(pattern=r"^step-[0-9]{12}$")
+    device: Literal["cuda"]
+    precision: Literal["bf16"]
+    compile_model: Literal[True]
+    cuda_device_names: tuple[str, ...]
+    cuda_version: str
+    torch_version: str
+    final_tokens_consumed: Annotated[int, Field(gt=0)]
+    training_steps: tuple[TrainingStepEvidence, ...]
+    validation_masked_reconstruction_loss_nats: Annotated[float, Field(ge=0)]
+    validation_variational_upper_bound_nats: Annotated[float, Field(ge=0)]
+    validation_mean_mask_rate: Annotated[float, Field(gt=0, le=1)]
+    validation_masked_tokens_per_second: Annotated[float, Field(gt=0)]
+    validation_model_forwards: Annotated[int, Field(gt=0)]
+    causal_perplexity_applicable: Literal[False] = False
+    export_transformers_version: str
+    export_fp32_max_abs_error: Annotated[float, Field(ge=0)]
+    export_fp32_loss_abs_error: Annotated[float, Field(ge=0)]
+    export_deterministic_trajectory_matches: Literal[True]
+    export_requires_trust_remote_code: Literal[True]
+    export_artifact_sha256: dict[str, Sha256]
+    generation_prompt_token_sha256: Sha256
+    generation_model_forwards: Annotated[int, Field(gt=0)]
+    generation_diffusion_steps: Annotated[int, Field(gt=0)]
+    generation_response_canvas_length: Annotated[int, Field(gt=0)]
+    generation_token_count: Annotated[int, Field(gt=0)]
+    generation_tokens_per_second: Annotated[float, Field(gt=0)]
+    generation_stop_reasons: tuple[Literal["eos", "canvas_complete"], ...]
+
+    def canonical_bytes(self) -> bytes:
+        """Return deterministic JSON bytes for the committed report."""
+
+        return json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+
+
 def _canonical_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -137,6 +203,38 @@ def _single_model_record(
         return model_type.model_validate(records[0])
     except ValueError as error:
         raise SmokeReportError(f"invalid JSONL schema: {path.name}") from error
+
+
+def _training_evidence(
+    path: str | Path,
+) -> tuple[str, tuple[TrainingStepEvidence, ...]]:
+    events = _canonical_jsonl(Path(path))
+    starts = [record for record in events if record.get("event") == "run_start"]
+    resumes = [record for record in events if record.get("event") == "run_resume"]
+    if len(starts) != 1 or len(resumes) != 1:
+        raise SmokeReportError("smoke evidence requires one start and one resume")
+    training_hash = starts[0].get("training_config_sha256")
+    if not isinstance(training_hash, str) or training_hash != resumes[0].get(
+        "training_config_sha256"
+    ):
+        raise SmokeReportError("training configuration changed across resume")
+    raw_config = starts[0].get("training_config")
+    if not isinstance(raw_config, dict):
+        raise SmokeReportError("training configuration record is missing")
+    if (
+        raw_config.get("device") != "cuda"
+        or raw_config.get("precision") != "bf16"
+        or raw_config.get("compile_model") is not True
+    ):
+        raise SmokeReportError("smoke did not use compiled bf16 CUDA training")
+    raw_steps = [record for record in events if record.get("event") == "optimizer_step"]
+    try:
+        steps = tuple(TrainingStepEvidence.model_validate(step) for step in raw_steps)
+    except ValueError as error:
+        raise SmokeReportError("optimizer-step evidence is invalid") from error
+    if [step.optimizer_step for step in steps] != list(range(1, len(steps) + 1)):
+        raise SmokeReportError("optimizer-step evidence is not contiguous")
+    return training_hash, steps
 
 
 def build_dense_smoke_report(
@@ -188,30 +286,7 @@ def _build_causal_smoke_report(
     generation_jsonl: str | Path,
     architecture: Literal["olmo2", "mamba2"],
 ) -> DenseSmokeReport:
-    events = _canonical_jsonl(Path(training_jsonl))
-    starts = [record for record in events if record.get("event") == "run_start"]
-    resumes = [record for record in events if record.get("event") == "run_resume"]
-    if len(starts) != 1 or len(resumes) != 1:
-        raise SmokeReportError("smoke evidence requires one start and one resume")
-    training_hash = starts[0].get("training_config_sha256")
-    if training_hash != resumes[0].get("training_config_sha256"):
-        raise SmokeReportError("training configuration changed across resume")
-    raw_config = starts[0].get("training_config")
-    if not isinstance(raw_config, dict):
-        raise SmokeReportError("training configuration record is missing")
-    if (
-        raw_config.get("device") != "cuda"
-        or raw_config.get("precision") != "bf16"
-        or raw_config.get("compile_model") is not True
-    ):
-        raise SmokeReportError("smoke did not use compiled bf16 CUDA training")
-    raw_steps = [record for record in events if record.get("event") == "optimizer_step"]
-    try:
-        steps = tuple(TrainingStepEvidence.model_validate(step) for step in raw_steps)
-    except ValueError as error:
-        raise SmokeReportError("optimizer-step evidence is invalid") from error
-    if [step.optimizer_step for step in steps] != list(range(1, len(steps) + 1)):
-        raise SmokeReportError("optimizer-step evidence is not contiguous")
+    training_hash, steps = _training_evidence(training_jsonl)
 
     checkpoint = validate_checkpoint(checkpoint_directory)
     if checkpoint.binding.architecture != architecture:
@@ -325,9 +400,127 @@ def _build_causal_smoke_report(
     )
 
 
+def build_diffusion_smoke_report(
+    *,
+    training_jsonl: str | Path,
+    checkpoint_directory: str | Path,
+    evaluation_jsonl: str | Path,
+    export_directory: str | Path,
+    generation_jsonl: str | Path,
+) -> DiffusionSmokeReport:
+    """Cross-check measured diffusion artifacts and return portable evidence."""
+
+    training_hash, steps = _training_evidence(training_jsonl)
+    checkpoint = validate_checkpoint(checkpoint_directory)
+    if checkpoint.binding.architecture != "masked_diffusion":
+        raise SmokeReportError("checkpoint architecture disagrees with report")
+    if checkpoint.binding.git.dirty:
+        raise SmokeReportError("smoke checkpoint was created from a dirty worktree")
+    checkpoint_hash = sha256(checkpoint.canonical_bytes()).hexdigest()
+    if not steps or steps[-1].optimizer_step != checkpoint.progress.optimizer_step:
+        raise SmokeReportError("training steps do not reach the final checkpoint")
+    if steps[-1].tokens_consumed != checkpoint.progress.tokens_consumed:
+        raise SmokeReportError("training tokens do not match the final checkpoint")
+    parent_id = checkpoint.lineage.parent_checkpoint_id
+    if parent_id is None:
+        raise SmokeReportError("smoke checkpoint does not prove resume lineage")
+
+    evaluation = _single_model_record(
+        Path(evaluation_jsonl),
+        DiffusionEvaluationResult,
+    )
+    assert isinstance(evaluation, DiffusionEvaluationResult)
+    exported: DiffusionHFExportManifest = load_diffusion_export_manifest(
+        Path(export_directory) / "export_manifest.json"
+    )
+    generation = _single_model_record(
+        Path(generation_jsonl),
+        DiffusionGenerationRecord,
+    )
+    assert isinstance(generation, DiffusionGenerationRecord)
+
+    binding = checkpoint.binding
+    model_hashes = {
+        binding.model_config_sha256,
+        evaluation.model_config_sha256,
+        exported.model_config_sha256,
+        generation.model_config_sha256,
+    }
+    if len(model_hashes) != 1:
+        raise SmokeReportError("model configuration hashes disagree")
+    tokenizer_hashes = {
+        binding.tokenizer_sha256,
+        evaluation.tokenizer_sha256,
+        exported.tokenizer_sha256,
+        generation.tokenizer_sha256,
+    }
+    if len(tokenizer_hashes) != 1:
+        raise SmokeReportError("tokenizer hashes disagree")
+    if evaluation.shard_manifest_sha256 != binding.shard_manifest_sha256:
+        raise SmokeReportError("evaluation shard hash disagrees with checkpoint")
+    if exported.source_checkpoint_id != checkpoint.lineage.checkpoint_id:
+        raise SmokeReportError("export checkpoint ID disagrees")
+    if exported.source_checkpoint_manifest_sha256 != checkpoint_hash:
+        raise SmokeReportError("export checkpoint manifest hash disagrees")
+    runtime = binding.runtime
+    if not runtime.cuda_available or runtime.cuda_version is None:
+        raise SmokeReportError("smoke checkpoint lacks CUDA runtime evidence")
+
+    recorded_at = max(
+        checkpoint.created_at_utc,
+        evaluation.evaluated_at_utc,
+        generation.generated_at_utc,
+    )
+    return DiffusionSmokeReport(
+        recorded_at_utc=recorded_at,
+        source_git_revision=binding.git.revision,
+        training_config_sha256=training_hash,
+        model_config_sha256=binding.model_config_sha256,
+        shard_manifest_sha256=binding.shard_manifest_sha256,
+        tokenizer_sha256=binding.tokenizer_sha256,
+        checkpoint_id=checkpoint.lineage.checkpoint_id,
+        checkpoint_manifest_sha256=checkpoint_hash,
+        parent_checkpoint_id=parent_id,
+        device="cuda",
+        precision="bf16",
+        compile_model=True,
+        cuda_device_names=runtime.cuda_device_names,
+        cuda_version=runtime.cuda_version,
+        torch_version=runtime.torch_version,
+        final_tokens_consumed=checkpoint.progress.tokens_consumed,
+        training_steps=steps,
+        validation_masked_reconstruction_loss_nats=(
+            evaluation.masked_reconstruction_loss_nats
+        ),
+        validation_variational_upper_bound_nats=(
+            evaluation.variational_upper_bound_nats
+        ),
+        validation_mean_mask_rate=evaluation.mean_mask_rate,
+        validation_masked_tokens_per_second=(evaluation.masked_tokens_per_second),
+        validation_model_forwards=evaluation.model_forwards,
+        export_transformers_version=exported.transformers_version,
+        export_fp32_max_abs_error=exported.fp32_max_abs_error,
+        export_fp32_loss_abs_error=exported.fp32_loss_abs_error,
+        export_deterministic_trajectory_matches=(
+            exported.deterministic_trajectory_matches
+        ),
+        export_requires_trust_remote_code=exported.requires_trust_remote_code,
+        export_artifact_sha256={
+            artifact.filename: artifact.sha256 for artifact in exported.artifacts
+        },
+        generation_prompt_token_sha256=generation.prompt_token_sha256,
+        generation_model_forwards=generation.result.model_forwards,
+        generation_diffusion_steps=generation.result.diffusion_steps,
+        generation_response_canvas_length=(generation.result.response_canvas_length),
+        generation_token_count=generation.result.generated_token_count,
+        generation_tokens_per_second=generation.result.tokens_per_second,
+        generation_stop_reasons=generation.result.stop_reasons,
+    )
+
+
 def write_dense_smoke_report(
     path: str | Path,
-    report: DenseSmokeReport,
+    report: DenseSmokeReport | DiffusionSmokeReport,
 ) -> None:
     """Atomically write one canonical report."""
 

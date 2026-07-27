@@ -6,15 +6,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from lm_from_zero.diffusion_evaluation import DiffusionEvaluationResult
 from lm_from_zero.evaluation import CausalEvaluationResult
 from lm_from_zero.generation import (
     CausalGenerationRecord,
     CausalGenerationResult,
+    DiffusionGenerationRecord,
+    DiffusionGenerationResult,
 )
 from lm_from_zero.smoke_report import (
     DenseSmokeReport,
+    DiffusionSmokeReport,
     SmokeReportError,
     build_dense_smoke_report,
+    build_diffusion_smoke_report,
     build_mamba2_smoke_report,
     write_dense_smoke_report,
 )
@@ -133,6 +138,53 @@ def _write_generation(path: Path) -> None:
     path.write_text(f"{record.canonical_json()}\n", encoding="utf-8")
 
 
+def _write_diffusion_evaluation(path: Path) -> None:
+    result = DiffusionEvaluationResult(
+        evaluated_at_utc=RECORDED_AT + timedelta(minutes=1),
+        split="validation",
+        model_config_sha256=MODEL_HASH,
+        shard_manifest_sha256=SHARD_HASH,
+        tokenizer_sha256=TOKENIZER_HASH,
+        seed=1_337,
+        batch_count=1,
+        source_sequence_count=2,
+        corruption_samples_per_batch=1,
+        evaluated_example_count=2,
+        model_forwards=1,
+        eligible_token_count=2_046,
+        masked_token_count=1_024,
+        mean_mask_rate=1_024 / 2_046,
+        masked_reconstruction_loss_nats=9.5,
+        variational_upper_bound_nats=10.25,
+        elapsed_seconds=0.5,
+        masked_tokens_per_second=2_048.0,
+        cursor_before=_cursor(0),
+        cursor_after=_cursor(2_048),
+    )
+    path.write_text(f"{result.canonical_json()}\n", encoding="utf-8")
+
+
+def _write_diffusion_generation(path: Path) -> None:
+    record = DiffusionGenerationRecord(
+        generated_at_utc=RECORDED_AT + timedelta(minutes=2),
+        model_config_sha256=MODEL_HASH,
+        tokenizer_sha256=TOKENIZER_HASH,
+        prompt_token_sha256=PROMPT_HASH,
+        result=DiffusionGenerationResult(
+            prompt_token_counts=(4,),
+            response_canvas_length=2,
+            generated_token_ids=((8, 9),),
+            stop_reasons=("canvas_complete",),
+            diffusion_steps=2,
+            model_forwards=2,
+            generated_token_count=2,
+            elapsed_seconds=0.1,
+            tokens_per_second=20.0,
+        ),
+    )
+    path.write_text(f"{record.canonical_json()}\n", encoding="utf-8")
+
+
 def _checkpoint() -> MagicMock:
     checkpoint = MagicMock()
     checkpoint.created_at_utc = RECORDED_AT
@@ -175,6 +227,14 @@ def _export(checkpoint: MagicMock) -> SimpleNamespace:
 def _mamba2_export(checkpoint: MagicMock) -> SimpleNamespace:
     exported = _export(checkpoint)
     exported.cached_fp32_max_abs_error = 0.0
+    exported.requires_trust_remote_code = True
+    return exported
+
+
+def _diffusion_export(checkpoint: MagicMock) -> SimpleNamespace:
+    exported = _export(checkpoint)
+    exported.fp32_loss_abs_error = 0.0
+    exported.deterministic_trajectory_matches = True
     exported.requires_trust_remote_code = True
     return exported
 
@@ -278,6 +338,41 @@ class DenseSmokeReportTests(unittest.TestCase):
             self.assertEqual(report.architecture, "mamba2")
             self.assertEqual(report.export_cached_fp32_max_abs_error, 0.0)
             self.assertTrue(report.export_requires_trust_remote_code)
+
+    def test_builds_diffusion_report_without_causal_perplexity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self._paths(root)
+            _write_diffusion_evaluation(paths[2])
+            _write_diffusion_generation(paths[4])
+            checkpoint = _checkpoint()
+            checkpoint.binding.architecture = "masked_diffusion"
+            with (
+                patch(
+                    "lm_from_zero.smoke_report.validate_checkpoint",
+                    return_value=checkpoint,
+                ),
+                patch(
+                    "lm_from_zero.smoke_report.load_diffusion_export_manifest",
+                    return_value=_diffusion_export(checkpoint),
+                ),
+            ):
+                report = build_diffusion_smoke_report(
+                    training_jsonl=paths[0],
+                    checkpoint_directory=paths[1],
+                    evaluation_jsonl=paths[2],
+                    export_directory=paths[3],
+                    generation_jsonl=paths[4],
+                )
+
+            self.assertIsInstance(report, DiffusionSmokeReport)
+            self.assertEqual(report.format, "lm-from-zero-diffusion-smoke-report")
+            self.assertEqual(report.architecture, "masked_diffusion")
+            self.assertFalse(report.causal_perplexity_applicable)
+            self.assertNotIn("validation_perplexity", report.model_dump())
+            self.assertEqual(report.validation_model_forwards, 1)
+            self.assertEqual(report.generation_diffusion_steps, 2)
+            self.assertTrue(report.export_deterministic_trajectory_matches)
 
     def test_rejects_noncanonical_and_incomplete_training_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1398,6 +1398,33 @@ def build_mamba2_smoke_report_command(
     typer.echo(report.model_dump_json())
 
 
+@app.command("build-diffusion-smoke-report")
+def build_diffusion_smoke_report_command(
+    training_jsonl: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    evaluation_jsonl: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    export_directory: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    generation_jsonl: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option()],
+) -> None:
+    """Generate portable masked-diffusion smoke evidence."""
+
+    from lm_from_zero.smoke_report import (
+        build_diffusion_smoke_report,
+        write_dense_smoke_report,
+    )
+
+    report = build_diffusion_smoke_report(
+        training_jsonl=training_jsonl,
+        checkpoint_directory=checkpoint,
+        evaluation_jsonl=evaluation_jsonl,
+        export_directory=export_directory,
+        generation_jsonl=generation_jsonl,
+    )
+    write_dense_smoke_report(output, report)
+    typer.echo(report.model_dump_json())
+
+
 @app.command("compare-dense-resume")
 def compare_dense_resume_command(
     uninterrupted_jsonl: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],

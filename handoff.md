@@ -172,6 +172,16 @@ The complete post-evaluation gate passes 174 tests and 12 subtests with 85.62%
 branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
 validation.
 
+The diffusion smoke-report builder is implemented locally. It requires one
+clean compiled-bf16 CUDA start/resume lineage and cross-validates the final
+checkpoint against the diffusion evaluation, self-contained export, and native
+generation records. Its portable schema contains diffusion loss/bound,
+corruption, custom-code parity, denoising-forward, throughput, runtime, and
+artifact-hash evidence and intentionally has no validation-perplexity field.
+The complete post-builder gate passes 175 tests and 12 subtests with 85.49%
+branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
+validation.
+
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving
 milestones, every selected model must have a real approved training lineage,

@@ -790,6 +790,19 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
   --output reports/zero-20m-mamba2-smoke.json
 ```
 
+Diffusion uses its own schema so causal perplexity cannot leak into the report:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  build-diffusion-smoke-report \
+  artifacts/runs/zero-20m-diffusion-smoke/events.jsonl \
+  artifacts/checkpoints/zero-20m-diffusion-smoke/step-000000000004 \
+  artifacts/evaluations/zero-20m-diffusion-smoke.jsonl \
+  artifacts/exports/zero-20m-diffusion-smoke \
+  artifacts/generations/zero-20m-diffusion-smoke.jsonl \
+  --output reports/zero-20m-diffusion-smoke.json
+```
+
 The builder validates checkpoint contents, clean Git lineage, contiguous
 optimizer steps, resume ancestry, and matching model/tokenizer/shard/checkpoint
 hashes across every input. The committed report is generated from recorded
@@ -798,7 +811,9 @@ four-step compiled bf16 CUDA run, evaluation throughput, exact Hugging Face
 fp32 parity, native cached-generation throughput, artifact hashes, and the
 source revision. The Mamba-2 form also records cached export parity and the
 grouped-normalization auto-model requirement. The intentionally untrained
-generation output is not treated as a quality result.
+generation output is not treated as a quality result. The diffusion form records
+masked reconstruction, its variational upper bound, clean custom-code export
+parity, and iterative-denoising work without a causal-perplexity field.
 
 ## TinyStories tokenizer sample
 
