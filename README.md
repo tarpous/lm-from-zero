@@ -20,6 +20,8 @@ generation. A compiled bf16 CUDA smoke on the RTX 4080 SUPER has exercised
 training, checkpoint resume, evaluation, export, and native generation. Its
 generated evidence is committed at
 [`reports/zero-20m-tinystories-smoke.json`](reports/zero-20m-tinystories-smoke.json).
+The project-owned Mamba-2 core is also implemented and verified on CPU; its
+training/export vertical slice remains the active milestone.
 No dataset, model weight, or external service is needed for the offline test
 suite.
 
@@ -154,6 +156,11 @@ The default verification path performs no network access.
 - Native dense generation with greedy, temperature, top-k, and top-p decoding;
   deterministic seeds; variable-length batches; EOS/context handling; default
   control-token suppression; dense KV reuse; and token-step streaming events.
+- A validated 19.943M-parameter Mamba-2 configuration plus project-owned
+  sequential, quadratic-reference, and chunked SSD; grouped input-dependent
+  B/C and time steps; causal depthwise convolution; official-style negative-A
+  and log-uniform time-step initialization; grouped gated RMSNorm; fp32
+  residual/SSM state; and constant-size recurrent decoding caches.
 
 ## Dense 20M model
 
@@ -178,6 +185,32 @@ typed Python APIs under `lm_from_zero.training`. The four-step run documented
 in the generated smoke report is integration evidence, not a trained model or
 quality result. The 500M-token baseline remains an explicit long-run approval
 boundary.
+
+## Mamba-2 20M core
+
+The pinned `zero-20m-mamba2` configuration uses seven layers, width 384,
+expansion factor 2, twelve 64-dimensional SSM heads in four B/C groups, state
+size 64, convolution width 4, SSD chunks of 256 tokens, vocabulary 16,000, and
+a 1,024-token context. Embeddings and the output head are untied. The realized
+19,943,164 trainable parameters exactly match the analytic breakdown.
+
+The default implementation uses only PyTorch operations. Parallel
+training/prefill follows the four-part chunked SSD decomposition, while cached
+decoding carries one fixed convolution window and recurrent SSM state per
+layer. Tests compare both paths with a token-by-token recurrence and explicit
+quadratic semiseparable matrix, including non-multiple chunk lengths and
+nonzero initial states. Left padding is state-preserving; right padding is
+explicitly rejected.
+
+Run the focused offline core verification with:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_mamba2.py --no-cov
+```
+
+The optional `mamba-ssm` package is not part of the default environment. It
+will be used only as a separately approved numerical oracle and fused-path
+benchmark; the project-owned implementation remains the production reference.
 
 ## Training checkpoints
 

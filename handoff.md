@@ -30,8 +30,8 @@ existing ignored TinyStories sample, 16K tokenizer, 23.8M-token shard build,
 tokenizer/model binding, and 20.159M dense configuration were revalidated
 successfully. WSL sees the RTX 4080 SUPER, and the full 500M-token command was
 checked in dry-run mode. The complete offline gate passes Ruff formatting and
-lint, strict mypy, CLI/torchrun discovery, lock validation, and 131 tests with
-85.31% branch coverage.
+lint, strict mypy, CLI/torchrun discovery, lock validation, and 140 tests with
+85.71% branch coverage.
 
 The measured dense integration slice is complete. A compiled bf16 CUDA run
 used the full-run scheduler configuration, stopped at optimizer step 2, resumed
@@ -53,10 +53,21 @@ calibrated thresholds in
 [`reports/zero-20m-tinystories-resume-tolerance.json`](reports/zero-20m-tinystories-resume-tolerance.json).
 This supports tolerance-equivalent compiled CUDA recovery, not bit-exactness.
 
-The next plan milestone is Milestone 5, the project-owned Mamba-2
-implementation and vertical slice. The 500M-token dense baseline remains a
-long GPU job and requires a fresh explicit approval. Data downloads,
-publication, and other external changes retain their own approval gates.
+Milestone 5 has started. The first phase implements the validated pinned
+19.943M-parameter Mamba-2 configuration, sequential recurrence, explicit
+quadratic SSD reference, project-owned chunked SSD with arbitrary final chunk,
+causal depthwise convolution, grouped selective parameters, official-style
+time-step/negative-A initialization, grouped gated RMSNorm, fp32
+residual/sensitive state, left-padding behavior, and constant-size recurrent
+cache. The complete offline gate now passes 140 tests with 85.71% branch
+coverage.
+
+The next Milestone 5 phase integrates this model with the shared optimizer,
+checkpoint, dry-run-first training, evaluation, Hugging Face export, and native
+generation paths. Installing the optional `mamba-ssm` oracle remains a separate
+dependency approval gate. The 500M-token dense baseline remains a long GPU job
+and requires a fresh explicit approval. Data downloads, publication, and other
+external changes retain their own approval gates.
 
 ---
 
