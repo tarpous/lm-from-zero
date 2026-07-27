@@ -1131,6 +1131,127 @@ def generate_mamba2_command(
     )
 
 
+@app.command("generate-diffusion")
+def generate_diffusion_command(
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    tokenizer_training_manifest: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False)
+    ],
+    prompt: Annotated[str, typer.Argument()],
+    response_length: Annotated[int, typer.Option(min=1)] = 64,
+    diffusion_steps: Annotated[int | None, typer.Option(min=1)] = None,
+    strategy: Annotated[Literal["greedy", "sample"], typer.Option()] = "greedy",
+    reveal_schedule: Annotated[Literal["linear", "cosine"], typer.Option()] = "linear",
+    temperature: Annotated[float, typer.Option(min=1e-12)] = 1.0,
+    remask_strategy: Annotated[
+        Literal["none", "low_confidence"], typer.Option()
+    ] = "none",
+    remask_fraction: Annotated[float, typer.Option(min=0, max=0.999999)] = 0.0,
+    seed: Annotated[int, typer.Option()] = 1337,
+    device: Annotated[str, typer.Option()] = "cpu",
+    allow_raw_special_tokens: Annotated[bool, typer.Option()] = False,
+    stream: Annotated[bool, typer.Option()] = False,
+    jsonl_output: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Generate locally by iteratively denoising a fixed response canvas."""
+
+    import torch
+
+    from lm_from_zero.generation import (
+        DiffusionGenerationConfig,
+        DiffusionGenerationEvent,
+        append_diffusion_generation_record,
+        create_diffusion_generation_record,
+        generate_diffusion,
+    )
+    from lm_from_zero.models import (
+        MaskedDiffusionConfig,
+        MaskedDiffusionForMaskedLM,
+    )
+    from lm_from_zero.tokenizer.bpe import ByteBPE
+    from lm_from_zero.training import load_checkpoint_model, validate_checkpoint
+
+    checkpoint_manifest = validate_checkpoint(checkpoint)
+    if checkpoint_manifest.binding.architecture != "masked_diffusion":
+        raise DataValidationError(
+            "native diffusion generation requires a masked-diffusion checkpoint"
+        )
+    model_config = MaskedDiffusionConfig.model_validate(
+        checkpoint_manifest.binding.resolved_model_config
+    )
+    training = load_training_manifest(tokenizer_training_manifest)
+    if (
+        training.status != "complete"
+        or training.tokenizer_hash != checkpoint_manifest.binding.tokenizer_sha256
+    ):
+        raise DataValidationError("tokenizer manifest does not match the checkpoint")
+    tokenizer = ByteBPE.load(
+        tokenizer_training_manifest.parent / training.tokenizer_file
+    )
+    if tokenizer.model_hash != training.tokenizer_hash:
+        raise DataValidationError("tokenizer file does not match its manifest")
+    model = MaskedDiffusionForMaskedLM(model_config)
+    load_checkpoint_model(
+        checkpoint,
+        model=model,
+        expected_binding=checkpoint_manifest.binding,
+    )
+    model.to(torch.device(device))
+    generation_config = DiffusionGenerationConfig(
+        strategy=strategy,
+        response_length=response_length,
+        diffusion_steps=diffusion_steps,
+        reveal_schedule=reveal_schedule,
+        temperature=temperature,
+        remask_strategy=remask_strategy,
+        remask_fraction=remask_fraction,
+        seed=seed,
+        allow_raw_special_tokens=allow_raw_special_tokens,
+    )
+
+    def emit(event: DiffusionGenerationEvent) -> None:
+        if stream:
+            typer.echo(
+                json.dumps(
+                    {"event": "reveal", **event.model_dump(mode="json")},
+                    sort_keys=True,
+                )
+            )
+
+    prompt_ids = tokenizer.encode(prompt)
+    result = generate_diffusion(
+        model,
+        [prompt_ids],
+        generation_config,
+        on_step=emit,
+    )
+    if jsonl_output is not None:
+        append_diffusion_generation_record(
+            jsonl_output,
+            create_diffusion_generation_record(
+                result,
+                [prompt_ids],
+                model_config_sha256=model_config.config_hash,
+                tokenizer_sha256=tokenizer.model_hash,
+            ),
+        )
+    generated = result.generated_token_ids[0]
+    typer.echo(
+        json.dumps(
+            {
+                "event": "complete",
+                "generated_text": tokenizer.decode(
+                    generated,
+                    render_special=True,
+                    errors="replace",
+                ),
+                **result.model_dump(mode="json"),
+            },
+            sort_keys=True,
+        )
+    )
+
+
 @app.command("build-dense-smoke-report")
 def build_dense_smoke_report_command(
     training_jsonl: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],

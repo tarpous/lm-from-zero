@@ -331,8 +331,32 @@ FLOPs. `--target-tokens` is available only for bounded tests and smoke runs.
 Execution still requires `--execute`; any long GPU run needs fresh explicit
 approval.
 
-The iterative sampler, export, and CUDA smoke are subsequent Milestone 6
-phases. The core and dry-run path alone are not a trained or chat-ready model.
+Native inference fills a fixed response canvas iteratively. It supports greedy
+or seeded temperature proposals, deterministic confidence-ranked reveals,
+linear/cosine schedules, optional low-confidence remasking, EOS truncation, and
+streamed reveal/remask events. The reference-quality default uses one model
+forward per response token; reduced-step schedules are explicit experiments,
+not equivalent-quality aliases.
+
+Generate from a validated diffusion checkpoint with:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  generate-diffusion \
+  artifacts/checkpoints/zero-20m-diffusion/step-000000000100 \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  "Once upon a time" \
+  --response-length 64 \
+  --diffusion-steps 64 \
+  --reveal-schedule linear
+```
+
+The sampler never mutates prompt tokens, always removes every response mask,
+and reports actual model forwards, total latency, and output throughput.
+`--remask-strategy low_confidence --remask-fraction <fraction>` enables
+revision before the final step. Export and the compiled-CUDA smoke remain later
+Milestone 6 phases. No quality-trained or chat-ready diffusion checkpoint
+exists yet.
 
 ## Training checkpoints
 

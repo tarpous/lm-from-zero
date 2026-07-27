@@ -133,6 +133,19 @@ fresh long-GPU approval boundary. The complete post-integration gate passes
 162 tests with 85.15% branch coverage plus formatting, lint, strict typing, CLI
 discovery, and lock validation.
 
+The native sampler phase is implemented locally. It supports batched
+variable-length prompts with fixed response canvases, linear/cosine reveal
+schedules, reference full-step and explicit reduced-step denoising, greedy or
+seeded temperature proposals, deterministic confidence tie-breaking, optional
+low-confidence remasking, immutable prompts, EOS truncation, streamed
+reveal/remask events, canonical JSONL evidence, and measured forward/latency
+counts. Focused tests cover every schedule/strategy, remasking, prompt
+immutability, mask-free termination, seed behavior, EOS, model-mode restoration,
+invalid contracts, evidence append, and CLI checkpoint/tokenizer dispatch.
+The complete post-sampler gate passes 169 tests and 12 subtests with 85.36%
+branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
+validation.
+
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving
 milestones, every selected model must have a real approved training lineage,
