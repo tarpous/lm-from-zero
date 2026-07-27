@@ -867,6 +867,76 @@ def evaluate_mamba2_command(
     typer.echo(result.canonical_json())
 
 
+@app.command("evaluate-diffusion")
+def evaluate_diffusion_command(
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    max_batches: Annotated[int, typer.Option(min=1)] = 32,
+    corruption_samples_per_batch: Annotated[int, typer.Option(min=1)] = 1,
+    sequence_length: Annotated[int, typer.Option(min=2)] = 1_024,
+    batch_size: Annotated[int, typer.Option(min=1)] = 8,
+    split: Annotated[str, typer.Option()] = "validation",
+    seed: Annotated[int, typer.Option()] = 1_337,
+    device: Annotated[str, typer.Option()] = "cpu",
+    precision: Annotated[str, typer.Option()] = "fp32",
+    jsonl_output: Annotated[Path | None, typer.Option()] = None,
+) -> None:
+    """Evaluate diffusion with fixed seeded corruption, never perplexity."""
+
+    from lm_from_zero.diffusion_evaluation import (
+        DiffusionEvaluationConfig,
+        append_diffusion_evaluation_result,
+        evaluate_diffusion,
+    )
+    from lm_from_zero.models import (
+        MaskedDiffusionConfig,
+        MaskedDiffusionForMaskedLM,
+    )
+    from lm_from_zero.training import (
+        CausalBatchConfig,
+        ShardBatchSource,
+        load_checkpoint_model,
+        validate_checkpoint,
+    )
+
+    manifest = validate_checkpoint(checkpoint)
+    if manifest.binding.architecture != "masked_diffusion":
+        raise DataValidationError(
+            "diffusion evaluation requires a masked-diffusion checkpoint"
+        )
+    model_config = MaskedDiffusionConfig.model_validate(
+        manifest.binding.resolved_model_config
+    )
+    batch_config = CausalBatchConfig.model_validate(
+        {
+            "split": split,
+            "sequence_length": sequence_length,
+            "micro_batch_size": batch_size,
+            "shuffle": False,
+        }
+    )
+    evaluation_config = DiffusionEvaluationConfig.model_validate(
+        {
+            "max_batches": max_batches,
+            "corruption_samples_per_batch": corruption_samples_per_batch,
+            "seed": seed,
+            "device": device,
+            "precision": precision,
+        }
+    )
+    source = ShardBatchSource(build_manifest, batch_config)
+    model = MaskedDiffusionForMaskedLM(model_config)
+    load_checkpoint_model(
+        checkpoint,
+        model=model,
+        expected_binding=manifest.binding,
+    )
+    result = evaluate_diffusion(model, source, evaluation_config)
+    if jsonl_output is not None:
+        append_diffusion_evaluation_result(jsonl_output, result)
+    typer.echo(result.canonical_json())
+
+
 @app.command("export-dense-hf")
 def export_dense_hf_command(
     checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],

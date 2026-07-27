@@ -160,6 +160,18 @@ The complete post-export gate passes 172 tests and 12 subtests with 85.48%
 branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
 validation.
 
+The architecture-specific diffusion evaluator is implemented locally. It uses
+fixed non-wrapping shard windows and a dedicated seeded corruption generator,
+then records masked-reconstruction cross-entropy, the eligible-normalized
+`1/t` variational upper bound, mask rate, model forwards, throughput, hashes,
+and exact cursor movement. Its schema explicitly marks causal perplexity as
+inapplicable. Tests cover deterministic repetition, checkpoint/CLI/JSONL
+integration, mismatched lineage, epoch wrapping, unavailable CUDA, and invalid
+timing.
+The complete post-evaluation gate passes 174 tests and 12 subtests with 85.62%
+branch coverage, plus formatting, lint, strict typing, CLI discovery, and lock
+validation.
+
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving
 milestones, every selected model must have a real approved training lineage,

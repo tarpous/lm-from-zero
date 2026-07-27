@@ -399,6 +399,29 @@ Focused export verification:
 PYTHONPATH=src uv run --frozen pytest tests/test_export_diffusion_hf.py --no-cov
 ```
 
+Evaluate a validated diffusion checkpoint on fixed, non-wrapping shard windows
+with a dedicated corruption seed:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  evaluate-diffusion \
+  artifacts/checkpoints/zero-20m-diffusion/step-000000000100 \
+  artifacts/shards/tinystories-16k/build.json \
+  --split validation \
+  --max-batches 32 \
+  --corruption-samples-per-batch 4 \
+  --seed 1337 \
+  --device cuda \
+  --precision bf16
+```
+
+The result reports masked-reconstruction cross-entropy and the Monte Carlo
+eligible-normalized `1/t` variational upper bound in nats, plus corruption rate,
+model forwards, and masked-token throughput. It explicitly marks causal
+perplexity as inapplicable; these values must not be placed in the dense/Mamba
+perplexity column. Reusing the same checkpoint, fixed windows, and seed
+reproduces the corruption trajectory.
+
 ## Training checkpoints
 
 Each published recovery point is an immutable directory under an ignored
