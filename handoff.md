@@ -70,13 +70,22 @@ optimizer-step token budget matching the analytic training FLOPs of the
 500M-token dense reference and records the achieved ratio. The complete
 offline gate passes 144 tests with 85.37% branch coverage.
 
-The next Milestone 5 phase is standard Hugging Face Mamba-2 export with explicit
-tensor mapping and internal/HF fp32 and cached-decoding parity, followed by a
-bounded compiled-bf16 CUDA vertical slice. Installing the optional
-`mamba-ssm` oracle remains a separate dependency approval gate. The 500M-token
-dense baseline remains a long GPU job and requires a fresh explicit approval.
-Data downloads, publication, and other external changes retain their own
-approval gates.
+The Hugging Face phase is complete with an explicit compatibility boundary.
+Every Mamba-2 tensor maps one-to-one to Transformers, but its unfused
+`Mamba2ForCausalLM` normalizes the full expanded width while the official
+Mamba-2 implementation uses `expanded_width / ngroups`. The atomic export
+therefore includes a small auto-model source that restores grouped gated
+RMSNorm and requires `trust_remote_code=True` on reload. Its manifest explicitly
+does not claim native-unfused Transformers parity. Internal/auto-model fp32
+logits and one-token recurrent-cache parity both pass with zero maximum absolute
+error in the small test model. The complete offline gate passes 147 tests with
+85.25% branch coverage.
+
+The next Milestone 5 phase is a bounded compiled-bf16 CUDA vertical slice with
+generated evidence. Installing the optional `mamba-ssm` oracle remains a
+separate dependency approval gate. The 500M-token dense baseline remains a long
+GPU job and requires a fresh explicit approval. Data downloads, publication,
+and other external changes retain their own approval gates.
 
 ---
 

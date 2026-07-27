@@ -691,6 +691,26 @@ def export_dense_hf_command(
     typer.echo(result.model_dump_json())
 
 
+@app.command("export-mamba2-hf")
+def export_mamba2_hf_command(
+    checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    tokenizer_training_manifest: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False)
+    ],
+    output_directory: Annotated[Path, typer.Option()],
+) -> None:
+    """Export Mamba-2 with grouped-normalization Hugging Face compatibility."""
+
+    from lm_from_zero.export_mamba2_hf import export_mamba2_to_hugging_face
+
+    result = export_mamba2_to_hugging_face(
+        checkpoint,
+        tokenizer_training_manifest,
+        output_directory,
+    )
+    typer.echo(result.model_dump_json())
+
+
 @app.command("generate-dense")
 def generate_dense_command(
     checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],

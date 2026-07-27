@@ -485,6 +485,55 @@ verification:
 PYTHONPATH=src uv run --frozen pytest tests/test_export_hf.py --no-cov
 ```
 
+## Mamba-2 Hugging Face export
+
+Export a validated Mamba-2 checkpoint and tokenizer with:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli export-mamba2-hf \
+  artifacts/checkpoints/zero-20m-mamba2/step-000000000100 \
+  artifacts/tokenizers/tinystories-16k/training.json \
+  --output-directory artifacts/exports/zero-20m-mamba2
+```
+
+The Mamba-2 tensor layout maps one-to-one onto Transformers, but its unfused
+`Mamba2ForCausalLM` fallback normalizes the complete expanded width. The
+official Mamba-2 implementation instead sets gated RMSNorm's group size to
+`expanded_width / ngroups`. The export therefore includes the small
+`hf_mamba2_compat.py` auto-model source that restores official grouped
+normalization on unfused runtimes; it does not replace the SSM, convolution, or
+cache implementation. See the
+[official Mamba-2 module](https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba2.py)
+and its
+[gated RMSNorm reference](https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/triton/layernorm_gated.py).
+
+Reload the local package through the public auto-model API:
+
+```python
+from transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    "artifacts/exports/zero-20m-mamba2",
+    local_files_only=True,
+    trust_remote_code=True,
+)
+```
+
+`trust_remote_code=True` executes the compatibility file copied into this local
+export, so inspect and retain the manifest hashes when moving it. The manifest
+explicitly records this requirement and does not claim parity for native
+unfused Transformers Mamba-2. Export acceptance requires complete tensor-set
+and shape matching plus internal/auto-model fp32 logits and one-token recurrent
+cache parity at `atol=1e-5, rtol=1e-5`. The tested small export has zero maximum
+absolute error on both comparisons. Publication remains a separate approval
+gate.
+
+Focused atomic export, reload, tokenizer, corruption, and parity verification:
+
+```bash
+PYTHONPATH=src uv run --frozen pytest tests/test_export_mamba2_hf.py --no-cov
+```
+
 ## Native dense generation
 
 Generate from a validated local checkpoint with the project-owned model and KV
