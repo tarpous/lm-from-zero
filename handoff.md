@@ -120,6 +120,19 @@ branch coverage plus formatting, lint, strict typing, CLI discovery, and lock
 validation. The next phase is shared training/checkpoint integration; the
 diffusion sampler, export, and CUDA smoke follow after that.
 
+The shared training/checkpoint phase is now implemented locally. A diffusion
+objective adapter corrupts each microbatch without branching through denoiser
+internals, and the existing single-process/DDP loop, optimizer, scheduler,
+metrics, cursor, atomic checkpoint, retention, and RNG recovery paths are
+reused. A focused interrupted/resumed CPU run exactly matches uninterrupted
+parameters and loss, proving the corruption RNG trajectory is recovered. The
+real dry run resolves 528,990,208 tokens, 64,574 optimizer steps, and
+53,821,918,276,485,120 estimated training FLOPs: a `1.0000089` ratio to the
+500M-token dense reference after complete-step rounding. `--execute` remains a
+fresh long-GPU approval boundary. The complete post-integration gate passes
+162 tests with 85.15% branch coverage plus formatting, lint, strict typing, CLI
+discovery, and lock validation.
+
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving
 milestones, every selected model must have a real approved training lineage,

@@ -1,4 +1,4 @@
-"""Deterministic single-process and DDP causal pretraining."""
+"""Deterministic single-process and DDP objective-adapted pretraining."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from hashlib import sha256
 from pathlib import Path
-from typing import Annotated, Any, Literal, Self, cast
+from typing import Annotated, Any, Literal, Protocol, Self, cast
 
 import numpy as np
 import torch
@@ -21,8 +21,12 @@ from torch.nn.parallel import DistributedDataParallel
 from lm_from_zero.models import (
     Mamba2Config,
     Mamba2ForCausalLM,
+    MaskedDiffusionConfig,
+    MaskedDiffusionForMaskedLM,
     Olmo2Config,
     Olmo2ForCausalLM,
+    base_pretraining_eligible_mask,
+    corrupt_for_diffusion,
 )
 from lm_from_zero.training.checkpointing import (
     CheckpointBinding,
@@ -195,8 +199,79 @@ class Mamba2TrainingConfig(BaseModel):
         return sha256(self.canonical_json().encode()).hexdigest()
 
 
-TrainingConfig = DenseTrainingConfig | Mamba2TrainingConfig
-CausalModel = Olmo2ForCausalLM | Mamba2ForCausalLM
+class DiffusionTrainingConfig(BaseModel):
+    """Resolved process-local masked-diffusion training contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    format: Literal["lm-from-zero-diffusion-training"] = (
+        "lm-from-zero-diffusion-training"
+    )
+    format_version: Literal[1] = 1
+    model: MaskedDiffusionConfig
+    batch: CausalBatchConfig
+    optimization: OptimizationConfig
+    gradient_accumulation_steps: Annotated[int, Field(gt=0)] = 1
+    checkpoint_every_steps: Annotated[int, Field(gt=0)] = 250
+    checkpoint_every_seconds: Annotated[float, Field(gt=0)] = 15 * 60
+    keep_latest_checkpoints: Annotated[int, Field(gt=0)] = 3
+    device: DeviceKind = "cpu"
+    precision: Precision = "fp32"
+    compile_model: bool = False
+    seed: int = 1_337
+
+    @model_validator(mode="after")
+    def validate_training_contract(self) -> Self:
+        if self.batch.sequence_length > self.model.max_position_embeddings:
+            raise ValueError("batch sequence length exceeds the model context")
+        if self.device == "cpu" and self.compile_model:
+            raise ValueError("CPU compilation is outside the default runner contract")
+        return self
+
+    @property
+    def tokens_per_optimizer_step(self) -> int:
+        """Return the fixed global effective token batch."""
+
+        return self.local_tokens_per_optimizer_step * self.batch.world_size
+
+    @property
+    def local_tokens_per_optimizer_step(self) -> int:
+        """Return the fixed token batch processed by this rank."""
+
+        return (
+            self.batch.sequence_length
+            * self.batch.micro_batch_size
+            * self.gradient_accumulation_steps
+        )
+
+    @property
+    def total_training_tokens(self) -> int:
+        """Return the configured token budget."""
+
+        return self.tokens_per_optimizer_step * self.optimization.total_steps
+
+    def canonical_json(self) -> str:
+        """Return a rank-independent canonical training configuration."""
+
+        payload = self.model_dump(mode="json")
+        batch = cast(dict[str, Any], payload["batch"])
+        batch["rank"] = 0
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @property
+    def config_hash(self) -> str:
+        """Return the resolved training-configuration hash."""
+
+        return sha256(self.canonical_json().encode()).hexdigest()
+
+
+TrainingConfig = DenseTrainingConfig | Mamba2TrainingConfig | DiffusionTrainingConfig
+PretrainingModel = Olmo2ForCausalLM | Mamba2ForCausalLM | MaskedDiffusionForMaskedLM
 
 
 class DenseRunPlan(BaseModel):
@@ -362,12 +437,114 @@ def create_mamba2_run_plan(
     )
 
 
+def create_diffusion_run_plan(
+    config: DiffusionTrainingConfig,
+    source: ShardBatchSource,
+    checkpoint_directory: str | Path,
+    *,
+    estimated_tokens_per_second: float | None = None,
+    jsonl_log: str | Path | None = None,
+    tensorboard_directory: str | Path | None = None,
+    parquet_log: str | Path | None = None,
+    reference_training_flops: int | None = None,
+) -> DenseRunPlan:
+    """Validate and estimate diffusion pretraining under matched FLOPs."""
+
+    plan = create_dense_run_plan(
+        config,
+        source,
+        checkpoint_directory,
+        estimated_tokens_per_second=estimated_tokens_per_second,
+        jsonl_log=jsonl_log,
+        tensorboard_directory=tensorboard_directory,
+        parquet_log=parquet_log,
+    )
+    if reference_training_flops is None:
+        return plan
+    if reference_training_flops <= 0:
+        raise ValueError("reference training FLOPs must be positive")
+    return plan.model_copy(
+        update={
+            "reference_training_flops": reference_training_flops,
+            "training_flop_ratio": (
+                plan.estimated_training_flops / reference_training_flops
+            ),
+        }
+    )
+
+
 def _autocast_context(config: TrainingConfig) -> torch.autocast:
     return torch.autocast(
         device_type=config.device,
         dtype=torch.bfloat16,
         enabled=config.precision == "bf16",
     )
+
+
+class TrainingObjective(Protocol):
+    """Prepare an architecture-specific batch and return one scalar loss."""
+
+    def loss(
+        self, model: nn.Module, batch: CausalBatch, device: torch.device
+    ) -> Tensor:
+        """Run the model objective for one local microbatch."""
+
+
+class CausalTrainingObjective:
+    """Shifted next-token objective for dense and Mamba-2 models."""
+
+    def loss(
+        self, model: nn.Module, batch: CausalBatch, device: torch.device
+    ) -> Tensor:
+        input_ids = batch.input_ids.to(device)
+        labels = batch.labels.to(device)
+        loss = cast(Any, model)(input_ids, labels=labels).loss
+        if not isinstance(loss, Tensor):
+            raise TrainingRunError("causal model did not return a training loss")
+        return loss
+
+
+class DiffusionTrainingObjective:
+    """Continuous-time masking adapter for the bidirectional denoiser."""
+
+    def __init__(self, config: MaskedDiffusionConfig) -> None:
+        self.config = config
+
+    def loss(
+        self, model: nn.Module, batch: CausalBatch, device: torch.device
+    ) -> Tensor:
+        original = batch.input_ids.to(device)
+        attention_mask = original != self.config.pad_token_id
+        eligible = base_pretraining_eligible_mask(
+            original,
+            attention_mask,
+            pad_token_id=self.config.pad_token_id,
+            bos_token_id=self.config.bos_token_id,
+        )
+        corrupted = corrupt_for_diffusion(
+            original,
+            eligible,
+            mask_token_id=self.config.mask_token_id,
+            epsilon=self.config.corruption_epsilon,
+        )
+        loss = cast(Any, model)(
+            corrupted.input_ids,
+            attention_mask=attention_mask,
+            labels=corrupted.labels,
+            eligible_mask=corrupted.eligible_mask,
+            time=corrupted.time,
+        ).loss
+        if not isinstance(loss, Tensor):
+            raise TrainingRunError("diffusion model did not return a training loss")
+        return loss
+
+
+def training_objective(config: TrainingConfig) -> TrainingObjective:
+    """Resolve the objective adapter without branching through model internals."""
+
+    if isinstance(config, DiffusionTrainingConfig):
+        return DiffusionTrainingObjective(config.model)
+    return CausalTrainingObjective()
 
 
 def train_accumulated_step(
@@ -378,6 +555,7 @@ def train_accumulated_step(
     *,
     zero_based_step: int,
     distributed: DistributedContext | None = None,
+    objective: TrainingObjective | None = None,
 ) -> OptimizerStepMetrics:
     """Apply one globally reduced update from equal-size local microbatches."""
 
@@ -406,9 +584,8 @@ def train_accumulated_step(
     )
     detached_losses: list[Tensor] = []
     final_cursor = batches[-1].cursor_after
+    resolved_objective = training_objective(config) if objective is None else objective
     for batch_index, batch in enumerate(batches):
-        input_ids = batch.input_ids.to(device)
-        labels = batch.labels.to(device)
         synchronization = (
             model.no_sync()
             if isinstance(model, DistributedDataParallel)
@@ -417,7 +594,7 @@ def train_accumulated_step(
         )
         with synchronization:
             with _autocast_context(config):
-                loss = cast(Any, model)(input_ids, labels=labels).loss
+                loss = resolved_objective.loss(model, batch, device)
             if not bool(torch.isfinite(loss)):
                 raise TrainingRunError("training loss is not finite")
             torch.autograd.backward(loss / config.gradient_accumulation_steps)
@@ -517,12 +694,12 @@ def _restore_portable_rng_state(value: object) -> None:
 
 
 class CausalTrainer:
-    """Run bounded causal pretraining with exact checkpoint resume."""
+    """Run bounded objective-adapted pretraining with exact checkpoint resume."""
 
     def __init__(
         self,
         *,
-        model: CausalModel,
+        model: PretrainingModel,
         source: ShardBatchSource,
         config: TrainingConfig,
         checkpoint_directory: str | Path,
@@ -573,6 +750,7 @@ class CausalTrainer:
         )
         self.source = source
         self.config = config
+        self.objective = training_objective(config)
         self.checkpoint_directory = Path(checkpoint_directory)
         self.jsonl_log = Path(jsonl_log)
         self.tensorboard_directory = (
@@ -822,6 +1000,7 @@ class CausalTrainer:
                 self.config,
                 zero_based_step=optimizer_step,
                 distributed=self.distributed,
+                objective=self.objective,
             )
             optimizer_step += 1
             metrics.append(step_metrics)
@@ -886,6 +1065,7 @@ class CausalTrainer:
 
 DenseTrainer = CausalTrainer
 Mamba2Trainer = CausalTrainer
+DiffusionTrainer = CausalTrainer
 
 
 def optimizer_steps_for_token_budget(

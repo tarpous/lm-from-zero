@@ -310,8 +310,29 @@ Run the focused offline core tests with:
 PYTHONPATH=src uv run --frozen pytest tests/test_diffusion.py --no-cov
 ```
 
-The training lifecycle, iterative sampler, export, and CUDA smoke are subsequent
-Milestone 6 phases. This core alone is not a trained or chat-ready model.
+Diffusion pretraining uses the shared shard cursor, AdamW/schedule policy,
+gradient accumulation/DDP loop, rank-zero telemetry, and atomic checkpoint
+format. A dedicated objective adapter performs corruption inside each
+microbatch. Python, NumPy, Torch CPU, and CUDA RNG state are checkpointed, so
+the sampled corruption trajectory resumes bit-exactly on CPU.
+
+The default dry run matches the estimated training FLOPs of 500M dense tokens:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  pretrain-diffusion artifacts/shards/tinystories-16k/build.json \
+  --checkpoint-directory artifacts/checkpoints/zero-20m-diffusion \
+  --jsonl-log artifacts/runs/zero-20m-diffusion/events.jsonl
+```
+
+At the pinned 1,024-token configuration, complete optimizer-step rounding gives
+528,990,208 diffusion tokens and a `1.0000089` ratio to the dense reference
+FLOPs. `--target-tokens` is available only for bounded tests and smoke runs.
+Execution still requires `--execute`; any long GPU run needs fresh explicit
+approval.
+
+The iterative sampler, export, and CUDA smoke are subsequent Milestone 6
+phases. The core and dry-run path alone are not a trained or chat-ready model.
 
 ## Training checkpoints
 

@@ -588,6 +588,144 @@ def pretrain_mamba2_command(
             typer.echo(result.model_dump_json())
 
 
+@app.command("pretrain-diffusion")
+def pretrain_diffusion_command(
+    build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    checkpoint_directory: Annotated[Path, typer.Option()],
+    jsonl_log: Annotated[Path, typer.Option()],
+    tensorboard_directory: Annotated[Path | None, typer.Option()] = None,
+    parquet_log: Annotated[Path | None, typer.Option()] = None,
+    target_tokens: Annotated[int | None, typer.Option(min=1)] = None,
+    dense_reference_tokens: Annotated[int, typer.Option(min=1)] = 500_000_000,
+    sequence_length: Annotated[int, typer.Option(min=2)] = 1_024,
+    micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
+    gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
+    learning_rate: Annotated[float, typer.Option(min=1e-12)] = 1e-3,
+    device: Annotated[str, typer.Option()] = "cuda",
+    precision: Annotated[str, typer.Option()] = "bf16",
+    compile_model: Annotated[bool, typer.Option()] = True,
+    estimated_tokens_per_second: Annotated[
+        float | None, typer.Option(min=1e-12)
+    ] = None,
+    resume_from: Annotated[
+        Path | None, typer.Option(exists=True, file_okay=False)
+    ] = None,
+    stop_after_optimizer_step: Annotated[int | None, typer.Option(min=1)] = None,
+    execute: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Plan diffusion pretraining; execute only after the approval gate."""
+
+    from lm_from_zero.models import (
+        MaskedDiffusionConfig,
+        MaskedDiffusionForMaskedLM,
+        Olmo2Config,
+    )
+    from lm_from_zero.training import (
+        CausalBatchConfig,
+        DiffusionTrainer,
+        DiffusionTrainingConfig,
+        OptimizationConfig,
+        ShardBatchSource,
+        create_diffusion_run_plan,
+        distributed_session,
+        optimizer_steps_for_token_budget,
+        seed_training,
+    )
+
+    with distributed_session(device) as distributed:
+        resolved_tensorboard_directory = (
+            jsonl_log.parent / "tensorboard"
+            if tensorboard_directory is None
+            else tensorboard_directory
+        )
+        resolved_parquet_log = (
+            jsonl_log.with_suffix(".parquet") if parquet_log is None else parquet_log
+        )
+        build = validate_shard_build(build_manifest)
+        if build.tokenizer_vocab_size != 16_000:
+            raise DataValidationError(
+                "diffusion TinyStories pretraining requires 16K shards"
+            )
+        model_config = MaskedDiffusionConfig(tokenizer_hash=build.tokenizer_hash)
+        dense_reference = Olmo2Config(tokenizer_hash=build.tokenizer_hash)
+        dense_forward_flops = dense_reference.forward_flops(
+            sequence_length
+        ).total_flops_per_token
+        diffusion_forward_flops = model_config.forward_flops(
+            sequence_length
+        ).total_flops_per_token
+        reference_training_flops = 3 * dense_forward_flops * dense_reference_tokens
+        matched_tokens = (
+            reference_training_flops + 3 * diffusion_forward_flops - 1
+        ) // (3 * diffusion_forward_flops)
+        resolved_target_tokens = (
+            matched_tokens if target_tokens is None else target_tokens
+        )
+        batch_config = CausalBatchConfig(
+            sequence_length=sequence_length,
+            micro_batch_size=micro_batch_size,
+            seed=1_337,
+            rank=distributed.rank,
+            world_size=distributed.world_size,
+        )
+        optimizer_steps = optimizer_steps_for_token_budget(
+            resolved_target_tokens,
+            sequence_length=sequence_length,
+            micro_batch_size=micro_batch_size,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            world_size=distributed.world_size,
+        )
+        training_config = DiffusionTrainingConfig.model_validate(
+            {
+                "model": model_config,
+                "batch": batch_config,
+                "optimization": OptimizationConfig(
+                    learning_rate=learning_rate,
+                    total_steps=optimizer_steps,
+                ),
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "device": device,
+                "precision": precision,
+                "compile_model": compile_model,
+            }
+        )
+        source = ShardBatchSource(build_manifest, batch_config)
+        plan = create_diffusion_run_plan(
+            training_config,
+            source,
+            checkpoint_directory,
+            estimated_tokens_per_second=estimated_tokens_per_second,
+            jsonl_log=jsonl_log,
+            tensorboard_directory=resolved_tensorboard_directory,
+            parquet_log=resolved_parquet_log,
+            reference_training_flops=reference_training_flops,
+        )
+        if distributed.is_primary:
+            typer.echo(plan.model_dump_json())
+        if not execute:
+            return
+
+        seed_training(training_config.seed, cuda=training_config.device == "cuda")
+        model = MaskedDiffusionForMaskedLM(model_config)
+        trainer = DiffusionTrainer(
+            model=model,
+            source=source,
+            config=training_config,
+            checkpoint_directory=checkpoint_directory,
+            repository=Path.cwd(),
+            jsonl_log=jsonl_log,
+            tensorboard_directory=resolved_tensorboard_directory,
+            parquet_log=resolved_parquet_log,
+            distributed=distributed,
+        )
+        result = trainer.run(
+            resume_from=resume_from,
+            stop_after_optimizer_step=stop_after_optimizer_step,
+        )
+        if distributed.is_primary:
+            typer.echo(result.model_dump_json())
+
+
 @app.command("materialize-training-metrics")
 def materialize_training_metrics_command(
     jsonl_log: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],

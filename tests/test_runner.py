@@ -23,6 +23,8 @@ from lm_from_zero.evaluation import CausalEvaluationConfig, evaluate_causal_loss
 from lm_from_zero.models import (
     Mamba2Config,
     Mamba2ForCausalLM,
+    MaskedDiffusionConfig,
+    MaskedDiffusionForMaskedLM,
     Olmo2Config,
     Olmo2ForCausalLM,
 )
@@ -39,6 +41,8 @@ from lm_from_zero.training import (
     CausalBatchConfig,
     DenseTrainer,
     DenseTrainingConfig,
+    DiffusionTrainer,
+    DiffusionTrainingConfig,
     DistributedContext,
     Mamba2Trainer,
     Mamba2TrainingConfig,
@@ -47,6 +51,7 @@ from lm_from_zero.training import (
     TrainingRunError,
     build_adamw,
     create_dense_run_plan,
+    create_diffusion_run_plan,
     optimizer_steps_for_token_budget,
     seed_training,
     train_accumulated_step,
@@ -146,6 +151,32 @@ def _mamba2_training_config(
             num_groups=2,
             conv_kernel=3,
             chunk_size=4,
+            max_position_embeddings=8,
+        ),
+        batch=batch,
+        optimization=OptimizationConfig(
+            total_steps=2,
+            gradient_clip_norm=1_000,
+        ),
+        checkpoint_every_steps=10,
+        checkpoint_every_seconds=10_000,
+    )
+
+
+def _diffusion_training_config(
+    tokenizer_hash: str,
+    vocab_size: int,
+    batch: CausalBatchConfig,
+) -> DiffusionTrainingConfig:
+    return DiffusionTrainingConfig(
+        model=MaskedDiffusionConfig(
+            model_name="runner-diffusion-test",
+            tokenizer_hash=tokenizer_hash,
+            vocab_size=vocab_size,
+            num_hidden_layers=1,
+            hidden_size=16,
+            num_attention_heads=2,
+            intermediate_size=32,
             max_position_embeddings=8,
         ),
         batch=batch,
@@ -722,6 +753,89 @@ class DenseRunnerTests(unittest.TestCase):
             self.assertEqual(evaluation.model_config_sha256, config.model.config_hash)
             self.assertTrue(math.isfinite(evaluation.perplexity))
 
+    def test_diffusion_runner_checkpoint_resume_is_cpu_bit_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build_path = _shard_build(root)
+            batch_config = CausalBatchConfig(
+                sequence_length=4,
+                micro_batch_size=1,
+                seed=37,
+            )
+            source = ShardBatchSource(build_path, batch_config)
+            config = _diffusion_training_config(
+                source.build.tokenizer_hash,
+                source.build.tokenizer_vocab_size,
+                batch_config,
+            )
+            plan = create_diffusion_run_plan(
+                config,
+                source,
+                root / "diffusion-resumed-checkpoints",
+                reference_training_flops=10_000_000,
+            )
+            self.assertEqual(plan.reference_training_flops, 10_000_000)
+            self.assertEqual(
+                plan.training_flop_ratio,
+                plan.estimated_training_flops / 10_000_000,
+            )
+
+            seed_training(config.seed, cuda=False)
+            interrupted_model = MaskedDiffusionForMaskedLM(config.model)
+            interrupted = DiffusionTrainer(
+                model=interrupted_model,
+                source=source,
+                config=config,
+                checkpoint_directory=root / "diffusion-resumed-checkpoints",
+                repository=REPOSITORY,
+                jsonl_log=root / "diffusion-resumed.jsonl",
+            )
+            first = interrupted.run(stop_after_optimizer_step=1)
+            first_manifest = validate_checkpoint(first.last_checkpoint)
+            self.assertEqual(
+                first_manifest.binding.architecture,
+                "masked_diffusion",
+            )
+
+            resumed_model = MaskedDiffusionForMaskedLM(config.model)
+            resumed = DiffusionTrainer(
+                model=resumed_model,
+                source=ShardBatchSource(build_path, batch_config),
+                config=config,
+                checkpoint_directory=root / "diffusion-resumed-checkpoints",
+                repository=REPOSITORY,
+                jsonl_log=root / "diffusion-resumed.jsonl",
+            )
+            resumed_result = resumed.run(
+                resume_from=first.last_checkpoint,
+                stop_after_optimizer_step=2,
+            )
+
+            seed_training(config.seed, cuda=False)
+            uninterrupted_model = MaskedDiffusionForMaskedLM(config.model)
+            uninterrupted = DiffusionTrainer(
+                model=uninterrupted_model,
+                source=ShardBatchSource(build_path, batch_config),
+                config=config,
+                checkpoint_directory=root / "diffusion-uninterrupted-checkpoints",
+                repository=REPOSITORY,
+                jsonl_log=root / "diffusion-uninterrupted.jsonl",
+            )
+            uninterrupted_result = uninterrupted.run()
+
+            self.assertEqual(resumed_result.optimizer_step, 2)
+            self.assertEqual(uninterrupted_result.optimizer_step, 2)
+            self.assertEqual(
+                resumed_result.metrics[-1].loss,
+                uninterrupted_result.metrics[-1].loss,
+            )
+            for expected, actual in zip(
+                uninterrupted_model.parameters(),
+                resumed_model.parameters(),
+                strict=True,
+            ):
+                torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+
     def test_cpu_ddp_reduces_metrics_and_coordinates_resume(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -884,6 +998,29 @@ class DenseRunnerTests(unittest.TestCase):
                 f"{mamba_dry_run.output}\n{mamba_dry_run.exception!r}",
             )
             self.assertEqual(mamba_dry_run.stdout.strip(), '{"planned":true}')
+
+            diffusion_arguments = [
+                "pretrain-diffusion",
+                *arguments[1:],
+            ]
+            with (
+                patch("lm_from_zero.cli.validate_shard_build", return_value=build),
+                patch(
+                    "lm_from_zero.training.ShardBatchSource",
+                    return_value=source,
+                ),
+                patch(
+                    "lm_from_zero.training.create_diffusion_run_plan",
+                    return_value=plan,
+                ),
+            ):
+                diffusion_dry_run = CliRunner().invoke(app, diffusion_arguments)
+            self.assertEqual(
+                diffusion_dry_run.exit_code,
+                0,
+                f"{diffusion_dry_run.output}\n{diffusion_dry_run.exception!r}",
+            )
+            self.assertEqual(diffusion_dry_run.stdout.strip(), '{"planned":true}')
 
     def test_mamba2_summary_evaluation_and_generation_cli_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
