@@ -142,6 +142,9 @@ The default verification path performs no network access.
 - Durable canonical training JSONL, resume-aware rank-zero TensorBoard
   scalars, and atomic typed Parquet metric snapshots with deterministic
   last-record-per-step recovery.
+- A generated compiled-CUDA resume-tolerance report that validates clean,
+  matching run/checkpoint contracts before comparing every final model tensor
+  and every optimizer-step loss against declared thresholds.
 - Fixed non-repeating shard evaluation with validated model-only checkpoint
   loading, causal loss, perplexity, throughput, exact cursors, and canonical
   append-only JSONL results.
@@ -313,8 +316,29 @@ PYTHONPATH=src uv run --frozen pytest tests/test_runner.py --no-cov
 The runner suite includes a real two-process CPU/Gloo interruption/resume test
 and compares its final parameters bit-exactly with an uninterrupted DDP run. A
 multi-GPU test remains optional and requires separate hosted or additional
-hardware approval. Compiled-CUDA resume-tolerance measurement remains the
-final Milestone 4 follow-up.
+hardware approval.
+
+After completing matching uninterrupted and interrupted/resumed single-GPU
+compiled bf16 runs, generate the resume-tolerance evidence directly from their
+durable logs and final checkpoints:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  compare-dense-resume \
+  artifacts/runs/resume-tolerance-uninterrupted/events.jsonl \
+  artifacts/checkpoints/resume-tolerance-uninterrupted/step-000000000004 \
+  artifacts/runs/resume-tolerance-resumed/events.jsonl \
+  artifacts/checkpoints/resume-tolerance-resumed/step-000000000004 \
+  --output reports/zero-20m-tinystories-resume-tolerance.json
+```
+
+The comparison requires identical validated training configurations, source
+revision, dependency/hardware runtime, tokenizer, shard build, and model
+configuration. It also checks that the resume event names the final resumed
+checkpoint's parent. The default acceptance thresholds are `atol=1e-5` and
+`rtol=1e-4` for model parameters and `atol=1e-4` for per-step loss. A failing
+comparison still writes its canonical report and exits nonzero. The bounded
+RTX 4080 SUPER measurement remains the final Milestone 4 follow-up.
 
 ## Dense checkpoint evaluation
 

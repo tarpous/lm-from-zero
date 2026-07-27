@@ -597,6 +597,44 @@ def build_dense_smoke_report_command(
     typer.echo(report.model_dump_json())
 
 
+@app.command("compare-dense-resume")
+def compare_dense_resume_command(
+    uninterrupted_jsonl: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    uninterrupted_checkpoint: Annotated[
+        Path, typer.Argument(exists=True, file_okay=False)
+    ],
+    resumed_jsonl: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    resumed_checkpoint: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option()],
+    parameter_atol: Annotated[float, typer.Option(min=1e-12)] = 1e-5,
+    parameter_rtol: Annotated[float, typer.Option(min=1e-12)] = 1e-4,
+    loss_atol: Annotated[float, typer.Option(min=1e-12)] = 1e-4,
+) -> None:
+    """Compare compiled-CUDA resumed training with an uninterrupted run."""
+
+    from lm_from_zero.resume_tolerance import (
+        ResumeToleranceThresholds,
+        build_dense_resume_tolerance_report,
+        write_dense_resume_tolerance_report,
+    )
+
+    report = build_dense_resume_tolerance_report(
+        uninterrupted_jsonl=uninterrupted_jsonl,
+        uninterrupted_checkpoint=uninterrupted_checkpoint,
+        resumed_jsonl=resumed_jsonl,
+        resumed_checkpoint=resumed_checkpoint,
+        thresholds=ResumeToleranceThresholds(
+            parameter_atol=parameter_atol,
+            parameter_rtol=parameter_rtol,
+            loss_atol=loss_atol,
+        ),
+    )
+    write_dense_resume_tolerance_report(output, report)
+    typer.echo(report.model_dump_json())
+    if not report.passed:
+        raise typer.Exit(code=1)
+
+
 @app.command("verify-shard")
 def verify_shard_command(
     manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
