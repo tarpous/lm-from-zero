@@ -152,15 +152,17 @@ def verify_tokenizer_oracle_command(
 @app.command("verify-mamba2-oracle")
 def verify_mamba2_oracle_command(
     output: Annotated[Path, typer.Option()],
+    seed: Annotated[int, typer.Option()] = 1337,
 ) -> None:
     """Compare project-owned chunked SSD with the optional CUDA oracle."""
 
     from lm_from_zero.mamba2_oracle import (
+        Mamba2OracleConfig,
         verify_mamba2_oracle,
         write_mamba2_oracle_report,
     )
 
-    result = verify_mamba2_oracle()
+    result = verify_mamba2_oracle(Mamba2OracleConfig(seed=seed))
     write_mamba2_oracle_report(output, result)
     typer.echo(result.model_dump_json())
 

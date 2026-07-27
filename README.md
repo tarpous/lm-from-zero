@@ -24,7 +24,9 @@ The project-owned Mamba-2 core and shared lifecycle are also implemented. Its
 compiled bf16 CUDA training/resume, evaluation, parity-safe Hugging Face export,
 and recurrent generation evidence is committed at
 [`reports/zero-20m-mamba2-smoke.json`](reports/zero-20m-mamba2-smoke.json).
-The optional `mamba-ssm` oracle remains a separate dependency approval gate.
+Its independent Triton SSD path also passes the pinned `mamba-ssm` numerical
+oracle on the RTX 4080 SUPER; the generated evidence is committed at
+[`reports/zero-20m-mamba2-oracle.json`](reports/zero-20m-mamba2-oracle.json).
 No dataset, model weight, or external service is needed for the offline test
 suite.
 
@@ -45,7 +47,7 @@ The approved initial toolchain uses a project-local environment:
 
 ```bash
 uv venv --python 3.12 .venv
-uv sync --frozen --all-groups --link-mode copy
+uv sync --frozen --link-mode copy
 ```
 
 PyTorch is pinned to the official CUDA 13.0 wheel index through an explicit uv
@@ -60,9 +62,9 @@ TensorBoard 2.21.0 supplies the local `torch.utils.tensorboard.SummaryWriter`
 used by rank-zero training telemetry. Polars and PyArrow materialize the same
 canonical metrics as a typed Parquet table.
 
-Do not install project packages globally. Optional vLLM, JAX-CUDA, Mamba oracle,
-llama.cpp, GPU, dataset, and publication workflows will be documented and kept
-separate from the default environment.
+Do not install project packages globally. Optional vLLM, JAX-CUDA, llama.cpp,
+GPU, dataset, and publication workflows will be documented and kept separate
+from the default environment.
 
 ## Verification
 
@@ -211,25 +213,39 @@ Run the focused offline core verification with:
 PYTHONPATH=src uv run --frozen pytest tests/test_mamba2.py --no-cov
 ```
 
-The optional `mamba-ssm` package is not part of the default environment. It
-will be used only as a separately approved numerical oracle and fused-path
-benchmark; the project-owned implementation remains the production reference.
-The dependency-neutral harness is already implemented and covered with an
-injected reference. After the optional package is approved and installed, run
-the real CUDA comparison with:
+The pinned `mamba-ssm==2.3.2.post1` package is an optional dependency group, not
+part of the default environment. Its current PyPI artifact is source-only and
+its package root imports an unrelated CUDA extension unconditionally. The
+oracle therefore installs the package without that extension and loads only its
+independent Triton SSD modules:
+
+```bash
+MAMBA_SKIP_CUDA_BUILD=TRUE \
+uv sync --frozen --group mamba-oracle --link-mode copy
+```
+
+This changes only `.venv`; it does not require or install a host CUDA toolkit.
+The project-owned implementation remains the production reference. Run the
+real CUDA comparison with:
 
 ```bash
 PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
   verify-mamba2-oracle \
-  --output reports/zero-20m-mamba2-oracle.json
+  --output reports/zero-20m-mamba2-oracle.json \
+  --seed 1337
 ```
 
 The command uses the pinned architecture's 12 heads, four B/C groups,
 64-dimensional heads and state, a non-multiple 257-token sequence, nonzero
-initial recurrent state, learned-style time-step bias, negative A, and D skip.
-It compares both output and final recurrent state against
-`mamba_chunk_scan_combined` under predeclared fp32 tolerances and writes the
-measured result atomically.
+initial recurrent state, the model's initialization ranges for time steps and
+negative A, and D skip. It compares both output and final recurrent state
+against `mamba_chunk_scan_combined`. Acceptance requires the pinned upstream
+CUDA tolerance (`rtol=1e-2`, `atol=3e-3`) or both relative L2 error below
+`0.1%` and no element beyond twice that upstream allowance. This handles
+TF32-sensitive cancellation without accepting broad drift or a large isolated
+error. The canonical report records the configuration, package/runtime/device
+versions, maximum absolute errors, relative L2 errors, normalized worst-element
+ratios, and pass status.
 
 Mamba-2 reuses the shared data stream, AdamW policy, accumulation/DDP loop,
 atomic checkpoint/recovery format, JSONL/TensorBoard/Parquet telemetry, fixed

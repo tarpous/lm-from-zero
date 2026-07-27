@@ -90,15 +90,23 @@ parity with maximum absolute errors `1.13e-6` and `8.94e-7`, followed by native
 recurrent generation. All hashes and measurements are generated in
 `reports/zero-20m-mamba2-smoke.json`.
 
-Milestone 5's remaining acceptance item is parity against the optional
-`mamba-ssm` 2.3.2.post1 oracle. Installing that Linux/CUDA package is a separate
-dependency approval gate. The dependency-neutral harness and failure handling
-are implemented and tested; the remaining action is to add the optional group,
-update the lockfile, build/install its CUDA extension in `.venv`, and generate
-`reports/zero-20m-mamba2-oracle.json` from the real kernel comparison. The
-500M-token dense and 605.5M-token compute-matched Mamba runs remain long GPU
-jobs and require fresh explicit approval. Data downloads, publication, and
-other external changes retain their own approval gates.
+Milestone 5 is now complete. The optional group pins
+`mamba-ssm==2.3.2.post1`; because its current PyPI artifact is source-only, it
+is installed with `MAMBA_SKIP_CUDA_BUILD=TRUE` and the harness namespace-loads
+only the independent Triton SSD modules instead of the package root's unrelated
+`selective_scan_cuda` import. The real 12-head/four-group, 257-token comparison
+passed on the RTX 4080 SUPER with nonzero initial state and the model's actual
+time-step/A initialization domain. Output and final-state relative L2 errors
+were `0.00074075` and `0.00070149`; no element exceeded the bounded acceptance
+policy. The complete machine-readable evidence is in
+[`reports/zero-20m-mamba2-oracle.json`](reports/zero-20m-mamba2-oracle.json).
+The post-oracle complete gate passes formatting, lint, strict typing, CLI and
+lock discovery, and all 152 tests with 85.48% branch coverage.
+
+The next implementation phase is Milestone 6, the compute-matched masked
+diffusion model. The 500M-token dense and 605.5M-token compute-matched Mamba
+runs remain long GPU jobs and require fresh explicit approval. Data downloads,
+publication, and other external changes retain their own approval gates.
 
 The master plan now ends with a separate final-readiness stage. After all
 architecture, training, post-training, export, evaluation, and serving

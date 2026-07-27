@@ -48,6 +48,13 @@ def _reference_scan(
 
 
 class Mamba2OracleTests(unittest.TestCase):
+    def test_defaults_match_pinned_upstream_cuda_tolerance(self) -> None:
+        config = Mamba2OracleConfig()
+        self.assertEqual(config.atol, 3e-3)
+        self.assertEqual(config.rtol, 1e-2)
+        self.assertEqual(config.relative_l2_tolerance, 1e-3)
+        self.assertEqual(config.elementwise_tolerance_multiplier, 2.0)
+
     def test_reference_injection_matches_and_writes_canonical_report(self) -> None:
         config = Mamba2OracleConfig(
             batch_size=1,
@@ -73,6 +80,10 @@ class Mamba2OracleTests(unittest.TestCase):
 
         self.assertEqual(result.output_max_abs_error, 0.0)
         self.assertEqual(result.state_max_abs_error, 0.0)
+        self.assertEqual(result.output_relative_l2_error, 0.0)
+        self.assertEqual(result.state_relative_l2_error, 0.0)
+        self.assertEqual(result.output_max_tolerance_ratio, 0.0)
+        self.assertEqual(result.state_max_tolerance_ratio, 0.0)
         self.assertTrue(result.output_close)
         self.assertTrue(result.state_close)
         with tempfile.TemporaryDirectory() as directory:
@@ -92,7 +103,7 @@ class Mamba2OracleTests(unittest.TestCase):
                 "lm_from_zero.mamba2_oracle.import_module",
                 side_effect=ImportError("missing"),
             ),
-            self.assertRaisesRegex(Mamba2OracleError, "working CUDA extensions"),
+            self.assertRaisesRegex(Mamba2OracleError, "Triton SSD kernel"),
         ):
             _load_oracle_scan()
 
@@ -115,6 +126,30 @@ class Mamba2OracleTests(unittest.TestCase):
         ):
             verify_mamba2_oracle(config)
 
+        def bounded_scan(
+            *args: object, **kwargs: object
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            output, state = _reference_scan(*args, **kwargs)  # type: ignore[arg-type]
+            changed = output.clone()
+            threshold = config.atol + config.rtol * changed.flatten()[0].abs()
+            changed.flatten()[0].add_(1.5 * threshold)
+            return changed, state
+
+        bounded_config = config.model_copy(update={"relative_l2_tolerance": 1.0})
+        with (
+            patch(
+                "lm_from_zero.mamba2_oracle._load_oracle_scan",
+                return_value=bounded_scan,
+            ),
+            patch(
+                "lm_from_zero.mamba2_oracle._oracle_version",
+                return_value="2.3.2.post1",
+            ),
+        ):
+            bounded = verify_mamba2_oracle(bounded_config)
+        self.assertGreater(bounded.output_max_tolerance_ratio, 1.0)
+        self.assertLess(bounded.output_max_tolerance_ratio, 2.0)
+
         def wrong_scan(*args: object, **kwargs: object) -> tuple[torch.Tensor, ...]:
             reference = _reference_scan(*args, **kwargs)  # type: ignore[arg-type]
             return reference[0] + 1, reference[1]
@@ -133,6 +168,10 @@ class Mamba2OracleTests(unittest.TestCase):
             Mamba2OracleConfig(num_heads=3, num_groups=2)
         with self.assertRaisesRegex(ValueError, "CPU or CUDA"):
             Mamba2OracleConfig(device="mps")
+        with self.assertRaisesRegex(ValueError, "time_step_min"):
+            Mamba2OracleConfig(time_step_min=0.2, time_step_max=0.1)
+        with self.assertRaisesRegex(ValueError, "a_init_min"):
+            Mamba2OracleConfig(a_init_min=2.0, a_init_max=1.0)
         with (
             patch(
                 "lm_from_zero.mamba2_oracle.version",

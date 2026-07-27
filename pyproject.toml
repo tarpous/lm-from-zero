@@ -26,8 +26,12 @@ dev = [
     "pytest-cov==7.1.0",
     "ruff==0.15.22",
 ]
+mamba-oracle = [
+    "mamba-ssm==2.3.2.post1",
+]
 
 [tool.uv]
+no-build-isolation-package = ["mamba-ssm"]
 package = false
 
 [tool.uv.sources]

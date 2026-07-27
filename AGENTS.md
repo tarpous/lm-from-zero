@@ -29,7 +29,16 @@ Create and synchronize the approved environment with:
 
 ```bash
 uv venv --python 3.12 .venv
-uv sync --frozen --all-groups --link-mode copy
+uv sync --frozen --link-mode copy
+```
+
+The optional pinned Mamba-2 Triton oracle is source-only for the current
+PyTorch release. Install its independent Triton SSD path without attempting the
+unrelated `selective_scan_cuda` extension:
+
+```bash
+MAMBA_SKIP_CUDA_BUILD=TRUE \
+uv sync --frozen --group mamba-oracle --link-mode copy
 ```
 
 `--link-mode copy` avoids cross-filesystem hard-link warnings between the WSL
@@ -52,11 +61,13 @@ When the ignored TinyStories sample exists, verify it separately with
 data/tinystories/manifest.json`.
 
 Tokenizer training, oracle verification, and benchmark commands are documented
-in `README.md`. The same document contains the deterministic shard build and
-full-build verification commands, the dense-model configuration summary, and
-the focused checkpoint, runner, evaluation, Hugging Face export, and native
-generation test commands. The pretraining command prints a dry-run plan unless
-`--execute` is explicitly supplied.
+in `README.md`. Mamba oracle verification requires the separately synchronized
+`mamba-oracle` group and a CUDA GPU, but not a host CUDA toolkit. The same
+document contains the deterministic shard build and full-build verification
+commands, the dense-model configuration summary, and the focused checkpoint,
+runner, evaluation, Hugging Face export, and native generation test commands.
+The pretraining command prints a dry-run plan unless `--execute` is explicitly
+supplied.
 Checkpoint evaluation must use fixed non-wrapping shard windows. Checkpoints
 use canonical manifests, separate Safetensors model weights, and
 restricted-load recovery state under ignored `artifacts/`. Do not copy measured
