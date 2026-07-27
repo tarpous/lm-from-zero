@@ -214,6 +214,22 @@ PYTHONPATH=src uv run --frozen pytest tests/test_mamba2.py --no-cov
 The optional `mamba-ssm` package is not part of the default environment. It
 will be used only as a separately approved numerical oracle and fused-path
 benchmark; the project-owned implementation remains the production reference.
+The dependency-neutral harness is already implemented and covered with an
+injected reference. After the optional package is approved and installed, run
+the real CUDA comparison with:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  verify-mamba2-oracle \
+  --output reports/zero-20m-mamba2-oracle.json
+```
+
+The command uses the pinned architecture's 12 heads, four B/C groups,
+64-dimensional heads and state, a non-multiple 257-token sequence, nonzero
+initial recurrent state, learned-style time-step bias, negative A, and D skip.
+It compares both output and final recurrent state against
+`mamba_chunk_scan_combined` under predeclared fp32 tolerances and writes the
+measured result atomically.
 
 Mamba-2 reuses the shared data stream, AdamW policy, accumulation/DDP loop,
 atomic checkpoint/recovery format, JSONL/TensorBoard/Parquet telemetry, fixed

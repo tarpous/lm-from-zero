@@ -92,10 +92,23 @@ recurrent generation. All hashes and measurements are generated in
 
 Milestone 5's remaining acceptance item is parity against the optional
 `mamba-ssm` 2.3.2.post1 oracle. Installing that Linux/CUDA package is a separate
-dependency approval gate. The 500M-token dense and 605.5M-token compute-matched
-Mamba runs remain long GPU jobs and require fresh explicit approval. Data
-downloads, publication, and other external changes retain their own approval
-gates.
+dependency approval gate. The dependency-neutral harness and failure handling
+are implemented and tested; the remaining action is to add the optional group,
+update the lockfile, build/install its CUDA extension in `.venv`, and generate
+`reports/zero-20m-mamba2-oracle.json` from the real kernel comparison. The
+500M-token dense and 605.5M-token compute-matched Mamba runs remain long GPU
+jobs and require fresh explicit approval. Data downloads, publication, and
+other external changes retain their own approval gates.
+
+The master plan now ends with a separate final-readiness stage. After all
+architecture, training, post-training, export, evaluation, and serving
+milestones, every selected model must have a real approved training lineage,
+architecture-appropriate instruction/post-training, held-out chat-quality
+evidence, a cleanly reloadable artifact, and a documented local RTX 4080 SUPER
+chat launch path. Smoke checkpoints and base next-token models must never be
+presented as genuinely ready. The final handoff must list each ready model,
+where it lives, how to launch it, and the evidence and limitations attached to
+it.
 
 ---
 

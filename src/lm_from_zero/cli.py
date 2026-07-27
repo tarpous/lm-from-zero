@@ -149,6 +149,22 @@ def verify_tokenizer_oracle_command(
     typer.echo(result.model_dump_json())
 
 
+@app.command("verify-mamba2-oracle")
+def verify_mamba2_oracle_command(
+    output: Annotated[Path, typer.Option()],
+) -> None:
+    """Compare project-owned chunked SSD with the optional CUDA oracle."""
+
+    from lm_from_zero.mamba2_oracle import (
+        verify_mamba2_oracle,
+        write_mamba2_oracle_report,
+    )
+
+    result = verify_mamba2_oracle()
+    write_mamba2_oracle_report(output, result)
+    typer.echo(result.model_dump_json())
+
+
 @app.command("build-token-shards")
 def build_token_shards_command(
     sample_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
