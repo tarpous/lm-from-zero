@@ -590,14 +590,28 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
   --output reports/zero-20m-tinystories-smoke.json
 ```
 
+Use the architecture-specific builder for the equivalent Mamba-2 evidence:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  build-mamba2-smoke-report \
+  artifacts/runs/zero-20m-mamba2-smoke/events.jsonl \
+  artifacts/checkpoints/zero-20m-mamba2-smoke/step-000000000004 \
+  artifacts/evaluations/zero-20m-mamba2-smoke.jsonl \
+  artifacts/exports/zero-20m-mamba2-smoke \
+  artifacts/generations/zero-20m-mamba2-smoke.jsonl \
+  --output reports/zero-20m-mamba2-smoke.json
+```
+
 The builder validates checkpoint contents, clean Git lineage, contiguous
 optimizer steps, resume ancestry, and matching model/tokenizer/shard/checkpoint
 hashes across every input. The committed report is generated from recorded
 artifacts; measured values are not copied manually. It records the resumed
 four-step compiled bf16 CUDA run, evaluation throughput, exact Hugging Face
 fp32 parity, native cached-generation throughput, artifact hashes, and the
-source revision. The intentionally untrained generation output is not treated
-as a quality result.
+source revision. The Mamba-2 form also records cached export parity and the
+grouped-normalization auto-model requirement. The intentionally untrained
+generation output is not treated as a quality result.
 
 ## TinyStories tokenizer sample
 

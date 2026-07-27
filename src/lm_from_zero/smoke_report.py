@@ -12,7 +12,11 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from lm_from_zero.evaluation import CausalEvaluationResult
-from lm_from_zero.export_hf import load_export_manifest
+from lm_from_zero.export_hf import DenseHFExportManifest, load_export_manifest
+from lm_from_zero.export_mamba2_hf import (
+    Mamba2HFExportManifest,
+    load_mamba2_export_manifest,
+)
 from lm_from_zero.generation import CausalGenerationRecord
 from lm_from_zero.training import validate_checkpoint
 
@@ -43,14 +47,16 @@ class TrainingStepEvidence(BaseModel):
 
 
 class DenseSmokeReport(BaseModel):
-    """Portable, generated evidence for the dense GPU vertical-slice smoke."""
+    """Portable, generated evidence for a causal GPU vertical-slice smoke."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
-    format: Literal["lm-from-zero-dense-smoke-report"] = (
-        "lm-from-zero-dense-smoke-report"
-    )
+    format: Literal[
+        "lm-from-zero-dense-smoke-report",
+        "lm-from-zero-mamba2-smoke-report",
+    ] = "lm-from-zero-dense-smoke-report"
     format_version: Literal[1] = 1
+    architecture: Literal["olmo2", "mamba2"] = "olmo2"
     recorded_at_utc: datetime
     source_git_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
     training_config_sha256: Sha256
@@ -73,6 +79,8 @@ class DenseSmokeReport(BaseModel):
     validation_predicted_tokens_per_second: Annotated[float, Field(gt=0)]
     export_transformers_version: str
     export_fp32_max_abs_error: Annotated[float, Field(ge=0)]
+    export_cached_fp32_max_abs_error: Annotated[float, Field(ge=0)] | None = None
+    export_requires_trust_remote_code: bool | None = None
     export_artifact_sha256: dict[str, Sha256]
     generation_prompt_token_sha256: Sha256
     generation_model_forwards: Annotated[int, Field(gt=0)]
@@ -141,6 +149,45 @@ def build_dense_smoke_report(
 ) -> DenseSmokeReport:
     """Cross-check measured artifacts and return compact portable evidence."""
 
+    return _build_causal_smoke_report(
+        training_jsonl=training_jsonl,
+        checkpoint_directory=checkpoint_directory,
+        evaluation_jsonl=evaluation_jsonl,
+        export_directory=export_directory,
+        generation_jsonl=generation_jsonl,
+        architecture="olmo2",
+    )
+
+
+def build_mamba2_smoke_report(
+    *,
+    training_jsonl: str | Path,
+    checkpoint_directory: str | Path,
+    evaluation_jsonl: str | Path,
+    export_directory: str | Path,
+    generation_jsonl: str | Path,
+) -> DenseSmokeReport:
+    """Cross-check measured Mamba-2 artifacts and return portable evidence."""
+
+    return _build_causal_smoke_report(
+        training_jsonl=training_jsonl,
+        checkpoint_directory=checkpoint_directory,
+        evaluation_jsonl=evaluation_jsonl,
+        export_directory=export_directory,
+        generation_jsonl=generation_jsonl,
+        architecture="mamba2",
+    )
+
+
+def _build_causal_smoke_report(
+    *,
+    training_jsonl: str | Path,
+    checkpoint_directory: str | Path,
+    evaluation_jsonl: str | Path,
+    export_directory: str | Path,
+    generation_jsonl: str | Path,
+    architecture: Literal["olmo2", "mamba2"],
+) -> DenseSmokeReport:
     events = _canonical_jsonl(Path(training_jsonl))
     starts = [record for record in events if record.get("event") == "run_start"]
     resumes = [record for record in events if record.get("event") == "run_resume"]
@@ -167,6 +214,8 @@ def build_dense_smoke_report(
         raise SmokeReportError("optimizer-step evidence is not contiguous")
 
     checkpoint = validate_checkpoint(checkpoint_directory)
+    if checkpoint.binding.architecture != architecture:
+        raise SmokeReportError("checkpoint architecture disagrees with report")
     if checkpoint.binding.git.dirty:
         raise SmokeReportError("smoke checkpoint was created from a dirty worktree")
     checkpoint_hash = sha256(checkpoint.canonical_bytes()).hexdigest()
@@ -183,7 +232,23 @@ def build_dense_smoke_report(
         CausalEvaluationResult,
     )
     assert isinstance(evaluation, CausalEvaluationResult)
-    exported = load_export_manifest(Path(export_directory) / "export_manifest.json")
+    exported: DenseHFExportManifest | Mamba2HFExportManifest
+    report_format: Literal[
+        "lm-from-zero-dense-smoke-report",
+        "lm-from-zero-mamba2-smoke-report",
+    ]
+    if architecture == "olmo2":
+        exported = load_export_manifest(Path(export_directory) / "export_manifest.json")
+        cached_export_error = None
+        requires_trust_remote_code = None
+        report_format = "lm-from-zero-dense-smoke-report"
+    else:
+        exported = load_mamba2_export_manifest(
+            Path(export_directory) / "export_manifest.json"
+        )
+        cached_export_error = exported.cached_fp32_max_abs_error
+        requires_trust_remote_code = exported.requires_trust_remote_code
+        report_format = "lm-from-zero-mamba2-smoke-report"
     generation = _single_model_record(
         Path(generation_jsonl),
         CausalGenerationRecord,
@@ -223,6 +288,8 @@ def build_dense_smoke_report(
         generation.generated_at_utc,
     )
     return DenseSmokeReport(
+        format=report_format,
+        architecture=architecture,
         recorded_at_utc=recorded_at,
         source_git_revision=binding.git.revision,
         training_config_sha256=str(training_hash),
@@ -245,6 +312,8 @@ def build_dense_smoke_report(
         validation_predicted_tokens_per_second=(evaluation.predicted_tokens_per_second),
         export_transformers_version=exported.transformers_version,
         export_fp32_max_abs_error=exported.fp32_max_abs_error,
+        export_cached_fp32_max_abs_error=cached_export_error,
+        export_requires_trust_remote_code=requires_trust_remote_code,
         export_artifact_sha256={
             artifact.filename: artifact.sha256 for artifact in exported.artifacts
         },

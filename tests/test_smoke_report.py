@@ -15,6 +15,7 @@ from lm_from_zero.smoke_report import (
     DenseSmokeReport,
     SmokeReportError,
     build_dense_smoke_report,
+    build_mamba2_smoke_report,
     write_dense_smoke_report,
 )
 from lm_from_zero.training import BatchCursor
@@ -138,6 +139,7 @@ def _checkpoint() -> MagicMock:
     checkpoint.canonical_bytes.return_value = b"canonical checkpoint"
     checkpoint.binding.git.dirty = False
     checkpoint.binding.git.revision = GIT_REVISION
+    checkpoint.binding.architecture = "olmo2"
     checkpoint.binding.model_config_sha256 = MODEL_HASH
     checkpoint.binding.shard_manifest_sha256 = SHARD_HASH
     checkpoint.binding.tokenizer_sha256 = TOKENIZER_HASH
@@ -168,6 +170,13 @@ def _export(checkpoint: MagicMock) -> SimpleNamespace:
             SimpleNamespace(filename="model.safetensors", sha256=ARTIFACT_HASH),
         ),
     )
+
+
+def _mamba2_export(checkpoint: MagicMock) -> SimpleNamespace:
+    exported = _export(checkpoint)
+    exported.cached_fp32_max_abs_error = 0.0
+    exported.requires_trust_remote_code = True
+    return exported
 
 
 class DenseSmokeReportTests(unittest.TestCase):
@@ -241,6 +250,35 @@ class DenseSmokeReportTests(unittest.TestCase):
             with self.assertRaisesRegex(SmokeReportError, "incomplete"):
                 write_dense_smoke_report(output, report)
 
+    def test_builds_mamba2_report_with_export_compatibility_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self._paths(root)
+            checkpoint = _checkpoint()
+            checkpoint.binding.architecture = "mamba2"
+            with (
+                patch(
+                    "lm_from_zero.smoke_report.validate_checkpoint",
+                    return_value=checkpoint,
+                ),
+                patch(
+                    "lm_from_zero.smoke_report.load_mamba2_export_manifest",
+                    return_value=_mamba2_export(checkpoint),
+                ),
+            ):
+                report = build_mamba2_smoke_report(
+                    training_jsonl=paths[0],
+                    checkpoint_directory=paths[1],
+                    evaluation_jsonl=paths[2],
+                    export_directory=paths[3],
+                    generation_jsonl=paths[4],
+                )
+
+            self.assertEqual(report.format, "lm-from-zero-mamba2-smoke-report")
+            self.assertEqual(report.architecture, "mamba2")
+            self.assertEqual(report.export_cached_fp32_max_abs_error, 0.0)
+            self.assertTrue(report.export_requires_trust_remote_code)
+
     def test_rejects_noncanonical_and_incomplete_training_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -305,6 +343,11 @@ class DenseSmokeReportTests(unittest.TestCase):
             checkpoint.binding.runtime.cuda_version = None
             with self.assertRaisesRegex(SmokeReportError, "CUDA runtime"):
                 self._build(paths, checkpoint, exported)
+
+            checkpoint = _checkpoint()
+            checkpoint.binding.architecture = "mamba2"
+            with self.assertRaisesRegex(SmokeReportError, "architecture"):
+                self._build(paths, checkpoint, _export(checkpoint))
 
 
 if __name__ == "__main__":
