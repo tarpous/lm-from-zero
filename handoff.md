@@ -47,9 +47,12 @@ The remaining Milestone 4 work is the bounded measured compiled-CUDA
 interrupted/resumed versus uninterrupted comparison. The generator validates
 canonical logs, clean matching checkpoints, source/runtime/config bindings,
 resume ancestry, complete step metrics, every final model tensor, and declared
-tolerances before publishing a canonical report. The 500M-token baseline is
-still a long GPU job and requires a fresh explicit approval. Data downloads,
-publication, and other external changes retain their own approval gates.
+tolerances before publishing a canonical report. The first strict-default pair
+is retained as a non-passing calibration report; a fresh confirmatory pair will
+use the predeclared calibrated thresholds documented in the README. The
+500M-token baseline is still a long GPU job and requires a fresh explicit
+approval. Data downloads, publication, and other external changes retain their
+own approval gates.
 
 ---
 

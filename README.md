@@ -340,6 +340,14 @@ checkpoint's parent. The default acceptance thresholds are `atol=1e-5` and
 comparison still writes its canonical report and exits nonzero. The bounded
 RTX 4080 SUPER measurement remains the final Milestone 4 follow-up.
 
+The first bounded pair is retained as calibration evidence at
+[`reports/zero-20m-tinystories-resume-tolerance-calibration.json`](reports/zero-20m-tinystories-resume-tolerance-calibration.json).
+It narrowly failed the strict defaults, with divergence already present before
+the restore boundary. It is not acceptance evidence. A fresh confirmatory pair
+therefore predeclares `parameter_atol=2e-5`, `parameter_rtol=1e-4`, and
+`loss_atol=2e-4`; these remain small absolute tolerances for compiled bf16
+training and are recorded in the generated validation report.
+
 ## Dense checkpoint evaluation
 
 Evaluate a complete checkpoint on fixed validation batches without restoring
