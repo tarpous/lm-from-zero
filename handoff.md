@@ -9,6 +9,8 @@ instructions are retained only as historical context. Work has advanced through:
 - the dry-run-first single-process and `torchrun` DDP dense trainer with
   reduced global metrics, rank-zero logs/checkpoints, and rank-local
   cursor/RNG recovery;
+- canonical durable JSONL metrics, resume-aware rank-zero TensorBoard scalars,
+  and atomic typed Parquet snapshots/rebuilding;
 - fixed non-repeating checkpoint loss evaluation;
 - standard local `Olmo2ForCausalLM` export with tokenizer/config metadata,
   explicit tensor mapping, checksums, atomic publication, and fp32/cache parity;
@@ -26,8 +28,8 @@ existing ignored TinyStories sample, 16K tokenizer, 23.8M-token shard build,
 tokenizer/model binding, and 20.159M dense configuration were revalidated
 successfully. WSL sees the RTX 4080 SUPER, and the full 500M-token command was
 checked in dry-run mode. The complete offline gate passes Ruff formatting and
-lint, strict mypy, CLI/torchrun discovery, lock validation, and 122 tests with
-85.43% branch coverage.
+lint, strict mypy, CLI/torchrun discovery, lock validation, and 127 tests with
+85.56% branch coverage.
 
 The measured dense integration slice is complete. A compiled bf16 CUDA run
 used the full-run scheduler configuration, stopped at optimizer step 2, resumed
@@ -39,11 +41,10 @@ throughput, peak CUDA memory, lineage, source and artifact hashes, lives at
 This is integration evidence only; four optimizer steps do not establish model
 quality.
 
-The next plan work is the remaining Milestone 4 training-system scope:
-TensorBoard/JSONL/Parquet logging and measured compiled-CUDA resume tolerance.
-The 500M-token baseline is still a long GPU job and requires a fresh explicit
-approval. Data downloads, publication, and other external changes retain their
-own approval gates.
+The next plan work is the remaining Milestone 4 training-system scope: measured
+compiled-CUDA resume tolerance. The 500M-token baseline is still a long GPU job
+and requires a fresh explicit approval. Data downloads, publication, and other
+external changes retain their own approval gates.
 
 ---
 

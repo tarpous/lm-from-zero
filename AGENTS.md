@@ -60,7 +60,9 @@ generation test commands. The pretraining command prints a dry-run plan unless
 Checkpoint evaluation must use fixed non-wrapping shard windows. Checkpoints
 use canonical manifests, separate Safetensors model weights, and
 restricted-load recovery state under ignored `artifacts/`. Do not copy measured
-values manually into reports.
+values manually into reports. Training JSONL is the durable metric source;
+TensorBoard and atomic Parquet outputs are rank-zero mirrors that must remain
+rebuildable from canonical JSONL.
 
 Dependency-free fallback verification:
 

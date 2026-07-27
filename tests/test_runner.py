@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, patch
 
+import polars as pl
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -531,6 +532,8 @@ class DenseRunnerTests(unittest.TestCase):
                 checkpoint_directory=root / "resumed-checkpoints",
                 repository=REPOSITORY,
                 jsonl_log=root / "resumed.jsonl",
+                tensorboard_directory=root / "tensorboard",
+                parquet_log=root / "metrics.parquet",
             )
             first = interrupted.run(stop_after_optimizer_step=1)
             self.assertEqual(first.optimizer_step, 1)
@@ -544,11 +547,16 @@ class DenseRunnerTests(unittest.TestCase):
                 checkpoint_directory=root / "resumed-checkpoints",
                 repository=REPOSITORY,
                 jsonl_log=root / "resumed.jsonl",
+                tensorboard_directory=root / "tensorboard",
+                parquet_log=root / "metrics.parquet",
             )
             resumed_result = resumed.run(resume_from=first.last_checkpoint)
             self.assertEqual(resumed_result.optimizer_step, 2)
             self.assertEqual(resumed_result.cursor.tokens_consumed, 16)
             self.assertEqual(len(resumed_result.metrics), 1)
+            metric_frame = pl.read_parquet(root / "metrics.parquet")
+            self.assertEqual(metric_frame["optimizer_step"].to_list(), [1, 2])
+            self.assertTrue(any((root / "tensorboard").glob("events.out.tfevents.*")))
             manifest = validate_checkpoint(resumed_result.last_checkpoint)
             self.assertEqual(
                 manifest.lineage.parent_checkpoint_id,

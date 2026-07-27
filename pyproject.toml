@@ -11,8 +11,9 @@ dependencies = [
     "pyarrow==25.0.0",
     "pydantic==2.13.4",
     "safetensors==0.8.0",
-    "torch==2.13.0",
+    "tensorboard==2.21.0",
     "tokenizers==0.22.2",
+    "torch==2.13.0",
     "transformers==5.14.1",
     "typer==0.27.0",
 ]

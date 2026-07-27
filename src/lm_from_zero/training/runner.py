@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import random
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from contextlib import nullcontext
-from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self, cast
@@ -38,6 +36,7 @@ from lm_from_zero.training.data import (
     ShardBatchSource,
 )
 from lm_from_zero.training.distributed import DistributedContext, DistributedError
+from lm_from_zero.training.metrics import TrainingMetricSinks
 from lm_from_zero.training.optimization import (
     OptimizationConfig,
     build_adamw,
@@ -142,6 +141,9 @@ class DenseRunPlan(BaseModel):
     estimated_checkpoint_bytes: Annotated[int, Field(gt=0)]
     estimated_seconds: float | None
     checkpoint_directory: str
+    jsonl_log: str | None
+    tensorboard_directory: str | None
+    parquet_log: str | None
     device: DeviceKind
     precision: Precision
     compile_model: bool
@@ -201,6 +203,9 @@ def create_dense_run_plan(
     checkpoint_directory: str | Path,
     *,
     estimated_tokens_per_second: float | None = None,
+    jsonl_log: str | Path | None = None,
+    tensorboard_directory: str | Path | None = None,
+    parquet_log: str | Path | None = None,
 ) -> DenseRunPlan:
     """Validate inputs and estimate compute, disk, and optional wall time."""
 
@@ -232,6 +237,11 @@ def create_dense_run_plan(
         estimated_checkpoint_bytes=12 * parameters,
         estimated_seconds=estimated_seconds,
         checkpoint_directory=str(Path(checkpoint_directory)),
+        jsonl_log=None if jsonl_log is None else str(Path(jsonl_log)),
+        tensorboard_directory=(
+            None if tensorboard_directory is None else str(Path(tensorboard_directory))
+        ),
+        parquet_log=None if parquet_log is None else str(Path(parquet_log)),
         device=config.device,
         precision=config.precision,
         compile_model=config.compile_model,
@@ -350,23 +360,6 @@ def train_accumulated_step(
     )
 
 
-def _append_jsonl(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    record = dict(payload)
-    record["recorded_at_utc"] = datetime.now(UTC).isoformat()
-    encoded = json.dumps(
-        record,
-        ensure_ascii=True,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    with path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(encoded)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-
-
 def _portable_rng_state() -> dict[str, Any]:
     """Encode RNG tensors as lists for reliable object collectives."""
 
@@ -421,6 +414,8 @@ class DenseTrainer:
         checkpoint_directory: str | Path,
         repository: str | Path,
         jsonl_log: str | Path,
+        tensorboard_directory: str | Path | None = None,
+        parquet_log: str | Path | None = None,
         distributed: DistributedContext | None = None,
     ) -> None:
         _validate_source_binding(config, source)
@@ -466,6 +461,10 @@ class DenseTrainer:
         self.config = config
         self.checkpoint_directory = Path(checkpoint_directory)
         self.jsonl_log = Path(jsonl_log)
+        self.tensorboard_directory = (
+            None if tensorboard_directory is None else Path(tensorboard_directory)
+        )
+        self.parquet_log = None if parquet_log is None else Path(parquet_log)
         self.optimizer, _ = build_adamw(self.model, config.optimization)
         self.binding: CheckpointBinding = create_checkpoint_binding(
             architecture="olmo2",
@@ -643,15 +642,50 @@ class DenseTrainer:
         )
         if not optimizer_step < target_step <= self.config.optimization.total_steps:
             raise TrainingRunError("bounded stop must follow resume and fit the budget")
-        if self.distributed.is_primary:
-            _append_jsonl(
-                self.jsonl_log,
+        sinks = (
+            TrainingMetricSinks(
+                jsonl_path=self.jsonl_log,
+                tensorboard_directory=self.tensorboard_directory,
+                parquet_path=self.parquet_log,
+                resume_optimizer_step=optimizer_step,
+            )
+            if self.distributed.is_primary
+            else None
+        )
+        try:
+            return self._run_loop(
+                optimizer_step=optimizer_step,
+                cursor=cursor,
+                parent=parent,
+                target_step=target_step,
+                resumed=resume_from is not None,
+                sinks=sinks,
+            )
+        except BaseException:
+            if sinks is not None:
+                sinks.abort()
+            raise
+
+    def _run_loop(
+        self,
+        *,
+        optimizer_step: int,
+        cursor: BatchCursor,
+        parent: Path | None,
+        target_step: int,
+        resumed: bool,
+        sinks: TrainingMetricSinks | None,
+    ) -> DenseTrainingResult:
+        """Execute a validated bounded loop with optional rank-zero sinks."""
+
+        if sinks is not None:
+            sinks.append_event(
                 {
-                    "event": "run_start" if resume_from is None else "run_resume",
+                    "event": "run_resume" if resumed else "run_start",
                     "optimizer_step": optimizer_step,
                     "training_config": self.config.model_dump(mode="json"),
                     "training_config_sha256": self.config.config_hash,
-                },
+                }
             )
         cadence = CheckpointCadence(
             last_saved_time_seconds=time.monotonic(),
@@ -677,14 +711,8 @@ class DenseTrainer:
             )
             optimizer_step += 1
             metrics.append(step_metrics)
-            if self.distributed.is_primary:
-                _append_jsonl(
-                    self.jsonl_log,
-                    {
-                        "event": "optimizer_step",
-                        **step_metrics.model_dump(mode="json"),
-                    },
-                )
+            if sinks is not None:
+                sinks.log_optimizer_step(step_metrics.model_dump(mode="json"))
             now = time.monotonic()
             primary_reasons = (
                 sorted(cadence.due_reasons(optimizer_step, now))
@@ -702,9 +730,8 @@ class DenseTrainer:
                     parent=parent,
                 )
                 cadence.mark_saved(optimizer_step, now)
-                if self.distributed.is_primary:
-                    _append_jsonl(
-                        self.jsonl_log,
+                if sinks is not None:
+                    sinks.append_event(
                         {
                             "checkpoint": parent.name,
                             "event": "checkpoint",
@@ -712,15 +739,15 @@ class DenseTrainer:
                             "reasons": reasons,
                         },
                     )
+                    sinks.snapshot()
 
         parent = self._save(
             optimizer_step=optimizer_step,
             cursor=cursor,
             parent=parent,
         )
-        if self.distributed.is_primary:
-            _append_jsonl(
-                self.jsonl_log,
+        if sinks is not None:
+            sinks.append_event(
                 {
                     "checkpoint": parent.name,
                     "event": (
@@ -734,6 +761,7 @@ class DenseTrainer:
                     ),
                 },
             )
+            sinks.close()
         return DenseTrainingResult(
             optimizer_step=optimizer_step,
             cursor=cursor,

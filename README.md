@@ -51,6 +51,9 @@ existing uv cache rather than modifying the host CUDA toolkit.
 Transformers 5.14.1 is used only at the export/comparison boundary. Its declared
 compatibility range requires Tokenizers 0.22.2; core tokenizer training, model
 definitions, pretraining, and objectives do not import Transformers.
+TensorBoard 2.21.0 supplies the local `torch.utils.tensorboard.SummaryWriter`
+used by rank-zero training telemetry. Polars and PyArrow materialize the same
+canonical metrics as a typed Parquet table.
 
 Do not install project packages globally. Optional vLLM, JAX-CUDA, Mamba oracle,
 llama.cpp, GPU, dataset, and publication workflows will be documented and kept
@@ -136,6 +139,9 @@ The default verification path performs no network access.
   `torchrun` DDP execution, reduced metrics, rank-zero JSONL/checkpoint
   ownership, rank-local recovery state, bounded CPU smoke support, checkpoint
   resume, and final checkpoint publication.
+- Durable canonical training JSONL, resume-aware rank-zero TensorBoard
+  scalars, and atomic typed Parquet metric snapshots with deterministic
+  last-record-per-step recovery.
 - Fixed non-repeating shard evaluation with validated model-only checkpoint
   loading, causal loss, perplexity, throughput, exact cursors, and canonical
   append-only JSONL results.
@@ -221,6 +227,8 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli pretrain-dense \
   artifacts/shards/tinystories-16k/build.json \
   --checkpoint-directory artifacts/checkpoints/zero-20m-tinystories \
   --jsonl-log artifacts/runs/zero-20m-tinystories/events.jsonl \
+  --tensorboard-directory artifacts/runs/zero-20m-tinystories/tensorboard \
+  --parquet-log artifacts/runs/zero-20m-tinystories/metrics.parquet \
   --target-tokens 500000000 \
   --estimated-tokens-per-second <measured-throughput>
 ```
@@ -244,6 +252,28 @@ token throughput, and CUDA peak allocated/reserved bytes when applicable. It
 saves a final checkpoint even when neither periodic trigger fires. Resume
 rejects a changed training-configuration hash as well as the checkpoint binding
 mismatches documented above.
+
+When the two metric options are omitted, TensorBoard defaults to a
+`tensorboard/` sibling of the JSONL log and Parquet defaults to the JSONL path
+with a `.parquet` suffix. JSONL is appended and fsynced first, making it the
+durable recovery source. TensorBoard uses `purge_step` on resume so steps after
+the restored checkpoint are replaced rather than displayed twice. Parquet is
+atomically rebuilt at checkpoint snapshots and graceful termination, keeping
+the latest canonical record for each optimizer step.
+
+After an abrupt interruption, rebuild Parquet directly from the surviving
+canonical JSONL:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  materialize-training-metrics \
+  artifacts/runs/zero-20m-tinystories/events.jsonl \
+  --output artifacts/runs/zero-20m-tinystories/metrics.parquet
+```
+
+The materializer rejects malformed, noncanonical, or schema-invalid
+optimizer-step records and publishes through an atomic replacement. All metric
+artifacts remain under ignored local artifact directories.
 
 Launch DDP through `torchrun`; each process receives a disjoint deterministic
 rank shard, while the token budget and reported throughput remain global:
@@ -283,8 +313,8 @@ PYTHONPATH=src uv run --frozen pytest tests/test_runner.py --no-cov
 The runner suite includes a real two-process CPU/Gloo interruption/resume test
 and compares its final parameters bit-exactly with an uninterrupted DDP run. A
 multi-GPU test remains optional and requires separate hosted or additional
-hardware approval. TensorBoard/Parquet generation and compiled-CUDA
-resume-tolerance measurements remain follow-up work.
+hardware approval. Compiled-CUDA resume-tolerance measurement remains the
+final Milestone 4 follow-up.
 
 ## Dense checkpoint evaluation
 

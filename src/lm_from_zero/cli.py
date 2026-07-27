@@ -243,6 +243,8 @@ def pretrain_dense_command(
     build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     checkpoint_directory: Annotated[Path, typer.Option()],
     jsonl_log: Annotated[Path, typer.Option()],
+    tensorboard_directory: Annotated[Path | None, typer.Option()] = None,
+    parquet_log: Annotated[Path | None, typer.Option()] = None,
     target_tokens: Annotated[int, typer.Option(min=1)] = 500_000_000,
     sequence_length: Annotated[int, typer.Option(min=2)] = 1_024,
     micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
@@ -276,6 +278,14 @@ def pretrain_dense_command(
     )
 
     with distributed_session(device) as distributed:
+        resolved_tensorboard_directory = (
+            jsonl_log.parent / "tensorboard"
+            if tensorboard_directory is None
+            else tensorboard_directory
+        )
+        resolved_parquet_log = (
+            jsonl_log.with_suffix(".parquet") if parquet_log is None else parquet_log
+        )
         build = validate_shard_build(build_manifest)
         if build.tokenizer_vocab_size != 16_000:
             raise DataValidationError(
@@ -316,6 +326,9 @@ def pretrain_dense_command(
             source,
             checkpoint_directory,
             estimated_tokens_per_second=estimated_tokens_per_second,
+            jsonl_log=jsonl_log,
+            tensorboard_directory=resolved_tensorboard_directory,
+            parquet_log=resolved_parquet_log,
         )
         if distributed.is_primary:
             typer.echo(plan.model_dump_json())
@@ -331,6 +344,8 @@ def pretrain_dense_command(
             checkpoint_directory=checkpoint_directory,
             repository=Path.cwd(),
             jsonl_log=jsonl_log,
+            tensorboard_directory=resolved_tensorboard_directory,
+            parquet_log=resolved_parquet_log,
             distributed=distributed,
         )
         result = trainer.run(
@@ -339,6 +354,31 @@ def pretrain_dense_command(
         )
         if distributed.is_primary:
             typer.echo(result.model_dump_json())
+
+
+@app.command("materialize-training-metrics")
+def materialize_training_metrics_command(
+    jsonl_log: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option()],
+) -> None:
+    """Rebuild a typed Parquet metric table from canonical training JSONL."""
+
+    from lm_from_zero.training.metrics import (
+        load_optimizer_metrics,
+        materialize_metrics_parquet,
+    )
+
+    destination = materialize_metrics_parquet(jsonl_log, output)
+    records = load_optimizer_metrics(jsonl_log)
+    typer.echo(
+        json.dumps(
+            {
+                "optimizer_steps": len(records),
+                "output": str(destination),
+            },
+            sort_keys=True,
+        )
+    )
 
 
 @app.command("evaluate-dense")
