@@ -434,6 +434,37 @@ checkpoint ID and canonical manifest hash; generation records the execution
 device. The smoke-report builder rejects records that are not bound to the
 selected checkpoint or were not produced on CUDA.
 
+## Architecture study planning
+
+Milestone 7 begins with a CPU-only plan that freezes all three architectures,
+the seeds `1337`, `2027`, and `3407`, shared data bindings, exact FLOP budgets,
+screening/full stop steps, output paths, and checkpoint-storage bounds:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  plan-architecture-study \
+  artifacts/shards/tinystories-16k/build.json \
+  --output artifacts/architecture-study/plan.json
+```
+
+The generated plan is ignored local evidence. Every lineage uses its full
+500M-dense-equivalent scheduler from step zero. Screening stops are step 12,208
+for dense, 14,784 for Mamba-2, and 12,915 for diffusion; only seed 1337 later
+resumes the identical configuration to its full bound. Seeds 2027 and 3407
+must not use shorter screening-only schedulers.
+
+All three pretraining commands accept `--seed`; it controls both model/RNG
+initialization and deterministic shard order and is included in the canonical
+training-configuration hash. The planner leaves wall-time estimates unset
+until synchronized 50-100-step calibration measurements exist. Do not use the
+four-step compile smokes as sustained-throughput estimates. The nine-lineage
+retention upper bound is about 8.65 GB before exports, telemetry, and transient
+atomic-publication space, so verify at least 15 GiB free before the study.
+
+The calibration and screening/full runs require explicit GPU approval. They
+must use the plan's seed-specific artifact paths and `--stop-after-optimizer-step`
+without changing the full scheduler configuration.
+
 ## Training checkpoints
 
 Each published recovery point is an immutable directory under an ignored

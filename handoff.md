@@ -1,5 +1,31 @@
 # Session handoff: dense vertical-slice implementation
 
+## Current update (August 4, 2026, Milestone 7 planning)
+
+Milestone 6 was committed and pushed as
+`a171ce7e11c62ba528c1ec3b276c18f3aba46890`. Milestone 7's first offline phase
+is now implemented locally: all three pretraining commands expose a seed that
+binds both initialization/RNG and shard order, dry-run plans report the seed
+and retained-checkpoint storage upper bound, and `plan-architecture-study`
+emits a canonical nine-lineage contract under ignored `artifacts/`.
+
+The real plan fixes seeds 1337/2027/3407 and full-scheduler screening stops at
+12,208 dense steps (100,007,936 tokens), 14,784 Mamba-2 steps (121,110,528
+tokens), and 12,915 diffusion steps (105,799,680 tokens). Only seed 1337 is
+marked to resume to the full bounds of 61,036, 73,919, and 64,574 steps. Every
+analytic FLOP ratio is within 0.008% of its nominal dense reference, well inside
+the predeclared 3% policy. The plan's four-checkpoint-per-lineage retention
+upper bound totals about 8.65 GB.
+
+Do not start the nine screening lineages yet. First commit this planner phase,
+then run a separately approved synchronized 50-100-step calibration for each
+architecture from the clean revision. Feed those measured throughputs back
+into the planner to produce wall-time estimates and a final storage/free-space
+preflight before requesting approval for the long study.
+
+The post-planner complete gate passes formatting, lint, strict typing, CLI and
+lock discovery, and all 180 tests with 85.59% branch coverage.
+
 ## Current update (August 4, 2026)
 
 Milestone 6's bounded masked-diffusion CUDA smoke is complete locally. The

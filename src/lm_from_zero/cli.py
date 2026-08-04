@@ -345,6 +345,7 @@ def pretrain_dense_command(
     micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
     gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
     learning_rate: Annotated[float, typer.Option(min=1e-12)] = 1e-3,
+    seed: Annotated[int, typer.Option()] = 1_337,
     device: Annotated[str, typer.Option()] = "cuda",
     precision: Annotated[str, typer.Option()] = "bf16",
     compile_model: Annotated[bool, typer.Option()] = True,
@@ -390,7 +391,7 @@ def pretrain_dense_command(
         batch_config = CausalBatchConfig(
             sequence_length=sequence_length,
             micro_batch_size=micro_batch_size,
-            seed=1_337,
+            seed=seed,
             rank=distributed.rank,
             world_size=distributed.world_size,
         )
@@ -413,6 +414,7 @@ def pretrain_dense_command(
                 "device": device,
                 "precision": precision,
                 "compile_model": compile_model,
+                "seed": seed,
             }
         )
         source = ShardBatchSource(build_manifest, batch_config)
@@ -451,6 +453,42 @@ def pretrain_dense_command(
             typer.echo(result.model_dump_json())
 
 
+@app.command("plan-architecture-study")
+def plan_architecture_study_command(
+    build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output: Annotated[Path | None, typer.Option()] = None,
+    screening_dense_reference_tokens: Annotated[int, typer.Option(min=1)] = 100_000_000,
+    full_dense_reference_tokens: Annotated[int, typer.Option(min=1)] = 500_000_000,
+    micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
+    gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
+    dense_tokens_per_second: Annotated[float | None, typer.Option(min=1e-12)] = None,
+    mamba2_tokens_per_second: Annotated[float | None, typer.Option(min=1e-12)] = None,
+    diffusion_tokens_per_second: Annotated[
+        float | None, typer.Option(min=1e-12)
+    ] = None,
+) -> None:
+    """Freeze all nine full-scheduler lineages before architecture-study runs."""
+
+    from lm_from_zero.architecture_study import (
+        create_architecture_study_plan,
+        write_architecture_study_plan,
+    )
+
+    plan = create_architecture_study_plan(
+        build_manifest,
+        screening_dense_reference_tokens=screening_dense_reference_tokens,
+        full_dense_reference_tokens=full_dense_reference_tokens,
+        micro_batch_size=micro_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        dense_tokens_per_second=dense_tokens_per_second,
+        mamba2_tokens_per_second=mamba2_tokens_per_second,
+        diffusion_tokens_per_second=diffusion_tokens_per_second,
+    )
+    if output is not None:
+        write_architecture_study_plan(output, plan)
+    typer.echo(plan.canonical_json())
+
+
 @app.command("pretrain-mamba2")
 def pretrain_mamba2_command(
     build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
@@ -464,6 +502,7 @@ def pretrain_mamba2_command(
     micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
     gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
     learning_rate: Annotated[float, typer.Option(min=1e-12)] = 1e-3,
+    seed: Annotated[int, typer.Option()] = 1_337,
     device: Annotated[str, typer.Option()] = "cuda",
     precision: Annotated[str, typer.Option()] = "bf16",
     compile_model: Annotated[bool, typer.Option()] = True,
@@ -527,7 +566,7 @@ def pretrain_mamba2_command(
         batch_config = CausalBatchConfig(
             sequence_length=sequence_length,
             micro_batch_size=micro_batch_size,
-            seed=1_337,
+            seed=seed,
             rank=distributed.rank,
             world_size=distributed.world_size,
         )
@@ -550,6 +589,7 @@ def pretrain_mamba2_command(
                 "device": device,
                 "precision": precision,
                 "compile_model": compile_model,
+                "seed": seed,
             }
         )
         source = ShardBatchSource(build_manifest, batch_config)
@@ -602,6 +642,7 @@ def pretrain_diffusion_command(
     micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
     gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
     learning_rate: Annotated[float, typer.Option(min=1e-12)] = 1e-3,
+    seed: Annotated[int, typer.Option()] = 1_337,
     device: Annotated[str, typer.Option()] = "cuda",
     precision: Annotated[str, typer.Option()] = "bf16",
     compile_model: Annotated[bool, typer.Option()] = True,
@@ -665,7 +706,7 @@ def pretrain_diffusion_command(
         batch_config = CausalBatchConfig(
             sequence_length=sequence_length,
             micro_batch_size=micro_batch_size,
-            seed=1_337,
+            seed=seed,
             rank=distributed.rank,
             world_size=distributed.world_size,
         )
@@ -688,6 +729,7 @@ def pretrain_diffusion_command(
                 "device": device,
                 "precision": precision,
                 "compile_model": compile_model,
+                "seed": seed,
             }
         )
         source = ShardBatchSource(build_manifest, batch_config)

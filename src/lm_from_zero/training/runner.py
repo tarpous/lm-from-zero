@@ -283,6 +283,7 @@ class DenseRunPlan(BaseModel):
     model_config_sha256: str
     shard_manifest_sha256: str
     tokenizer_sha256: str
+    seed: int
     parameter_count: Annotated[int, Field(gt=0)]
     optimizer_steps: Annotated[int, Field(gt=0)]
     micro_batches_per_step: Annotated[int, Field(gt=0)]
@@ -294,6 +295,7 @@ class DenseRunPlan(BaseModel):
     reference_training_flops: Annotated[int | None, Field(gt=0)] = None
     training_flop_ratio: Annotated[float | None, Field(gt=0)] = None
     estimated_checkpoint_bytes: Annotated[int, Field(gt=0)]
+    estimated_retained_checkpoint_bytes_upper_bound: Annotated[int, Field(gt=0)]
     estimated_seconds: float | None
     checkpoint_directory: str
     jsonl_log: str | None
@@ -379,6 +381,7 @@ def create_dense_run_plan(
         model_config_sha256=config.model.config_hash,
         shard_manifest_sha256=source.build_manifest_sha256,
         tokenizer_sha256=source.build.tokenizer_hash,
+        seed=config.seed,
         parameter_count=parameters,
         optimizer_steps=config.optimization.total_steps,
         micro_batches_per_step=config.gradient_accumulation_steps,
@@ -388,6 +391,9 @@ def create_dense_run_plan(
         total_training_tokens=config.total_training_tokens,
         estimated_training_flops=(3 * forward_flops * config.total_training_tokens),
         estimated_checkpoint_bytes=12 * parameters,
+        estimated_retained_checkpoint_bytes_upper_bound=(
+            12 * parameters * (config.keep_latest_checkpoints + 1)
+        ),
         estimated_seconds=estimated_seconds,
         checkpoint_directory=str(Path(checkpoint_directory)),
         jsonl_log=None if jsonl_log is None else str(Path(jsonl_log)),

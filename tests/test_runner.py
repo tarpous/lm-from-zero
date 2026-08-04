@@ -589,9 +589,14 @@ class DenseRunnerTests(unittest.TestCase):
             self.assertEqual(plan.tokens_per_optimizer_step, 8)
             self.assertEqual(plan.total_training_tokens, 16)
             self.assertEqual(plan.estimated_seconds, 2)
+            self.assertEqual(plan.seed, config.seed)
             self.assertEqual(
                 plan.estimated_checkpoint_bytes,
                 12 * model_config.parameter_breakdown().total,
+            )
+            self.assertEqual(
+                plan.estimated_retained_checkpoint_bytes_upper_bound,
+                plan.estimated_checkpoint_bytes * (config.keep_latest_checkpoints + 1),
             )
 
             seed_training(config.seed, cuda=False)
@@ -910,6 +915,8 @@ class DenseRunnerTests(unittest.TestCase):
                 str(root / "run.jsonl"),
                 "--target-tokens",
                 "16384",
+                "--seed",
+                "2027",
                 "--stop-after-optimizer-step",
                 "2",
             ]
@@ -923,7 +930,7 @@ class DenseRunnerTests(unittest.TestCase):
                 patch(
                     "lm_from_zero.training.create_dense_run_plan",
                     return_value=plan,
-                ),
+                ) as dense_plan,
             ):
                 dry_run = CliRunner().invoke(app, arguments)
 
@@ -933,6 +940,9 @@ class DenseRunnerTests(unittest.TestCase):
                 f"{dry_run.output}\n{dry_run.exception!r}",
             )
             self.assertEqual(dry_run.stdout.strip(), '{"planned":true}')
+            dense_config = cast(DenseTrainingConfig, dense_plan.call_args.args[0])
+            self.assertEqual(dense_config.seed, 2_027)
+            self.assertEqual(dense_config.batch.seed, 2_027)
 
             with (
                 patch("lm_from_zero.cli.validate_shard_build", return_value=build),
@@ -958,7 +968,7 @@ class DenseRunnerTests(unittest.TestCase):
                 execution.stdout.splitlines(),
                 ['{"planned":true}', '{"trained":true}'],
             )
-            seed.assert_called_once_with(1_337, cuda=True)
+            seed.assert_called_once_with(2_027, cuda=True)
             run.assert_called_once_with(
                 resume_from=None,
                 stop_after_optimizer_step=2,
@@ -989,7 +999,7 @@ class DenseRunnerTests(unittest.TestCase):
                 patch(
                     "lm_from_zero.training.create_mamba2_run_plan",
                     return_value=plan,
-                ),
+                ) as mamba_plan,
             ):
                 mamba_dry_run = CliRunner().invoke(app, mamba_arguments)
             self.assertEqual(
@@ -998,6 +1008,9 @@ class DenseRunnerTests(unittest.TestCase):
                 f"{mamba_dry_run.output}\n{mamba_dry_run.exception!r}",
             )
             self.assertEqual(mamba_dry_run.stdout.strip(), '{"planned":true}')
+            mamba_config = cast(Mamba2TrainingConfig, mamba_plan.call_args.args[0])
+            self.assertEqual(mamba_config.seed, 2_027)
+            self.assertEqual(mamba_config.batch.seed, 2_027)
 
             diffusion_arguments = [
                 "pretrain-diffusion",
@@ -1012,7 +1025,7 @@ class DenseRunnerTests(unittest.TestCase):
                 patch(
                     "lm_from_zero.training.create_diffusion_run_plan",
                     return_value=plan,
-                ),
+                ) as diffusion_plan,
             ):
                 diffusion_dry_run = CliRunner().invoke(app, diffusion_arguments)
             self.assertEqual(
@@ -1021,6 +1034,12 @@ class DenseRunnerTests(unittest.TestCase):
                 f"{diffusion_dry_run.output}\n{diffusion_dry_run.exception!r}",
             )
             self.assertEqual(diffusion_dry_run.stdout.strip(), '{"planned":true}')
+            diffusion_config = cast(
+                DiffusionTrainingConfig,
+                diffusion_plan.call_args.args[0],
+            )
+            self.assertEqual(diffusion_config.seed, 2_027)
+            self.assertEqual(diffusion_config.batch.seed, 2_027)
 
     def test_mamba2_summary_evaluation_and_generation_cli_dispatch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
