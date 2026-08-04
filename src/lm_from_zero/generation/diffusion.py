@@ -122,8 +122,11 @@ class DiffusionGenerationRecord(BaseModel):
     format: Literal["lm-from-zero-diffusion-generation"] = (
         "lm-from-zero-diffusion-generation"
     )
-    format_version: Literal[1] = 1
+    format_version: Literal[2] = 2
     generated_at_utc: datetime
+    source_checkpoint_id: str = Field(pattern=r"^step-[0-9]{12}$")
+    source_checkpoint_manifest_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    device: Literal["cpu", "cuda"]
     model_config_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
     tokenizer_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
     prompt_token_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
@@ -144,6 +147,9 @@ def create_diffusion_generation_record(
     result: DiffusionGenerationResult,
     prompts: Sequence[Sequence[int]],
     *,
+    source_checkpoint_id: str,
+    source_checkpoint_manifest_sha256: str,
+    device: Literal["cpu", "cuda"],
     model_config_sha256: str,
     tokenizer_sha256: str,
 ) -> DiffusionGenerationRecord:
@@ -156,6 +162,9 @@ def create_diffusion_generation_record(
     ).encode()
     return DiffusionGenerationRecord(
         generated_at_utc=datetime.now(UTC),
+        source_checkpoint_id=source_checkpoint_id,
+        source_checkpoint_manifest_sha256=source_checkpoint_manifest_sha256,
+        device=device,
         model_config_sha256=model_config_sha256,
         tokenizer_sha256=tokenizer_sha256,
         prompt_token_sha256=sha256(prompt_payload).hexdigest(),

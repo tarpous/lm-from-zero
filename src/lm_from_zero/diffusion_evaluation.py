@@ -25,6 +25,7 @@ from lm_from_zero.training.data import BatchCursor, ShardBatchSource
 
 DeviceKind = Literal["cpu", "cuda"]
 Precision = Literal["fp32", "bf16"]
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
 class DiffusionEvaluationError(RuntimeError):
@@ -51,8 +52,11 @@ class DiffusionEvaluationResult(BaseModel):
     format: Literal["lm-from-zero-diffusion-evaluation"] = (
         "lm-from-zero-diffusion-evaluation"
     )
-    format_version: Literal[1] = 1
+    format_version: Literal[2] = 2
     evaluated_at_utc: datetime
+    source_checkpoint_id: str = Field(pattern=r"^step-[0-9]{12}$")
+    source_checkpoint_manifest_sha256: str = Field(pattern=SHA256_PATTERN)
+    device: DeviceKind
     split: Split
     model_config_sha256: str
     shard_manifest_sha256: str
@@ -122,6 +126,8 @@ def evaluate_diffusion(
     source: ShardBatchSource,
     config: DiffusionEvaluationConfig,
     *,
+    source_checkpoint_id: str,
+    source_checkpoint_manifest_sha256: str,
     cursor: BatchCursor | None = None,
     clock: Callable[[], float] = time.perf_counter,
 ) -> DiffusionEvaluationResult:
@@ -210,6 +216,9 @@ def evaluate_diffusion(
     source_sequence_count = config.max_batches * source.config.micro_batch_size
     return DiffusionEvaluationResult(
         evaluated_at_utc=datetime.now(UTC),
+        source_checkpoint_id=source_checkpoint_id,
+        source_checkpoint_manifest_sha256=source_checkpoint_manifest_sha256,
+        device=config.device,
         split=source.config.split,
         model_config_sha256=model.config.config_hash,
         shard_manifest_sha256=source.build_manifest_sha256,

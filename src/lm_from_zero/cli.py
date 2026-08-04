@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -931,7 +932,15 @@ def evaluate_diffusion_command(
         model=model,
         expected_binding=manifest.binding,
     )
-    result = evaluate_diffusion(model, source, evaluation_config)
+    result = evaluate_diffusion(
+        model,
+        source,
+        evaluation_config,
+        source_checkpoint_id=manifest.lineage.checkpoint_id,
+        source_checkpoint_manifest_sha256=sha256(
+            manifest.canonical_bytes()
+        ).hexdigest(),
+    )
     if jsonl_output is not None:
         append_diffusion_evaluation_result(jsonl_output, result)
     typer.echo(result.canonical_json())
@@ -1240,7 +1249,7 @@ def generate_diffusion_command(
     ] = "none",
     remask_fraction: Annotated[float, typer.Option(min=0, max=0.999999)] = 0.0,
     seed: Annotated[int, typer.Option()] = 1337,
-    device: Annotated[str, typer.Option()] = "cpu",
+    device: Annotated[Literal["cpu", "cuda"], typer.Option()] = "cpu",
     allow_raw_special_tokens: Annotated[bool, typer.Option()] = False,
     stream: Annotated[bool, typer.Option()] = False,
     jsonl_output: Annotated[Path | None, typer.Option()] = None,
@@ -1323,6 +1332,11 @@ def generate_diffusion_command(
             create_diffusion_generation_record(
                 result,
                 [prompt_ids],
+                source_checkpoint_id=checkpoint_manifest.lineage.checkpoint_id,
+                source_checkpoint_manifest_sha256=sha256(
+                    checkpoint_manifest.canonical_bytes()
+                ).hexdigest(),
+                device=device,
                 model_config_sha256=model_config.config_hash,
                 tokenizer_sha256=tokenizer.model_hash,
             ),

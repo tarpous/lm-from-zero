@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,9 +32,12 @@ from lm_from_zero.training import (
     create_checkpoint_binding,
     load_checkpoint_model,
     save_checkpoint,
+    validate_checkpoint,
 )
 
 REPOSITORY = Path(__file__).resolve().parents[1]
+TEST_CHECKPOINT_ID = "step-000000000004"
+TEST_CHECKPOINT_HASH = "c" * 64
 
 
 def _shard_build(root: Path) -> Path:
@@ -143,6 +147,8 @@ class DiffusionEvaluationTests(unittest.TestCase):
                 restored,
                 source,
                 config,
+                source_checkpoint_id=TEST_CHECKPOINT_ID,
+                source_checkpoint_manifest_sha256=TEST_CHECKPOINT_HASH,
                 clock=iter((10.0, 12.0)).__next__,
             )
             self.assertTrue(restored.training)
@@ -159,11 +165,15 @@ class DiffusionEvaluationTests(unittest.TestCase):
             )
             self.assertFalse(result.causal_perplexity_applicable)
             self.assertNotIn("perplexity", result.model_dump())
+            self.assertEqual(result.format_version, 2)
+            self.assertEqual(result.source_checkpoint_id, TEST_CHECKPOINT_ID)
 
             repeated = evaluate_diffusion(
                 restored,
                 source,
                 config,
+                source_checkpoint_id=TEST_CHECKPOINT_ID,
+                source_checkpoint_manifest_sha256=TEST_CHECKPOINT_HASH,
                 clock=iter((20.0, 22.0)).__next__,
             )
             self.assertEqual(
@@ -215,6 +225,16 @@ class DiffusionEvaluationTests(unittest.TestCase):
             self.assertEqual(cli_payload["model_forwards"], 2)
             self.assertFalse(cli_payload["causal_perplexity_applicable"])
             self.assertNotIn("perplexity", cli_payload)
+            checkpoint_manifest = validate_checkpoint(checkpoint)
+            self.assertEqual(cli_payload["format_version"], 2)
+            self.assertEqual(
+                cli_payload["source_checkpoint_id"],
+                checkpoint_manifest.lineage.checkpoint_id,
+            )
+            self.assertEqual(
+                cli_payload["source_checkpoint_manifest_sha256"],
+                sha256(checkpoint_manifest.canonical_bytes()).hexdigest(),
+            )
             self.assertEqual(len(cli_jsonl.read_text().splitlines()), 1)
 
     def test_rejects_mismatch_repetition_cuda_and_static_clock(self) -> None:
@@ -244,18 +264,24 @@ class DiffusionEvaluationTests(unittest.TestCase):
                     wrong_model,
                     source,
                     DiffusionEvaluationConfig(max_batches=1),
+                    source_checkpoint_id=TEST_CHECKPOINT_ID,
+                    source_checkpoint_manifest_sha256=TEST_CHECKPOINT_HASH,
                 )
             with self.assertRaisesRegex(DiffusionEvaluationError, "repeat"):
                 evaluate_diffusion(
                     model,
                     source,
                     DiffusionEvaluationConfig(max_batches=source.window_count + 1),
+                    source_checkpoint_id=TEST_CHECKPOINT_ID,
+                    source_checkpoint_manifest_sha256=TEST_CHECKPOINT_HASH,
                 )
             with self.assertRaisesRegex(DiffusionEvaluationError, "clock"):
                 evaluate_diffusion(
                     model,
                     source,
                     DiffusionEvaluationConfig(max_batches=1),
+                    source_checkpoint_id=TEST_CHECKPOINT_ID,
+                    source_checkpoint_manifest_sha256=TEST_CHECKPOINT_HASH,
                     clock=lambda: 1.0,
                 )
             with (
@@ -269,6 +295,8 @@ class DiffusionEvaluationTests(unittest.TestCase):
                         max_batches=1,
                         device="cuda",
                     ),
+                    source_checkpoint_id=TEST_CHECKPOINT_ID,
+                    source_checkpoint_manifest_sha256=TEST_CHECKPOINT_HASH,
                 )
 
 

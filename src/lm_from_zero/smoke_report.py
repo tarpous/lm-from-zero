@@ -115,7 +115,7 @@ class DiffusionSmokeReport(BaseModel):
     format: Literal["lm-from-zero-diffusion-smoke-report"] = (
         "lm-from-zero-diffusion-smoke-report"
     )
-    format_version: Literal[1] = 1
+    format_version: Literal[2] = 2
     architecture: Literal["masked_diffusion"] = "masked_diffusion"
     recorded_at_utc: datetime
     source_git_revision: str = Field(pattern=r"^[0-9a-f]{40,64}$")
@@ -139,6 +139,9 @@ class DiffusionSmokeReport(BaseModel):
     validation_mean_mask_rate: Annotated[float, Field(gt=0, le=1)]
     validation_masked_tokens_per_second: Annotated[float, Field(gt=0)]
     validation_model_forwards: Annotated[int, Field(gt=0)]
+    evaluation_checkpoint_id: str = Field(pattern=r"^step-[0-9]{12}$")
+    evaluation_checkpoint_manifest_sha256: Sha256
+    evaluation_device: Literal["cuda"]
     causal_perplexity_applicable: Literal[False] = False
     export_transformers_version: str
     export_fp32_max_abs_error: Annotated[float, Field(ge=0)]
@@ -147,6 +150,9 @@ class DiffusionSmokeReport(BaseModel):
     export_requires_trust_remote_code: Literal[True]
     export_artifact_sha256: dict[str, Sha256]
     generation_prompt_token_sha256: Sha256
+    generation_checkpoint_id: str = Field(pattern=r"^step-[0-9]{12}$")
+    generation_checkpoint_manifest_sha256: Sha256
+    generation_device: Literal["cuda"]
     generation_model_forwards: Annotated[int, Field(gt=0)]
     generation_diffusion_steps: Annotated[int, Field(gt=0)]
     generation_response_canvas_length: Annotated[int, Field(gt=0)]
@@ -458,10 +464,22 @@ def build_diffusion_smoke_report(
         raise SmokeReportError("tokenizer hashes disagree")
     if evaluation.shard_manifest_sha256 != binding.shard_manifest_sha256:
         raise SmokeReportError("evaluation shard hash disagrees with checkpoint")
+    if evaluation.source_checkpoint_id != checkpoint.lineage.checkpoint_id:
+        raise SmokeReportError("evaluation checkpoint ID disagrees")
+    if evaluation.source_checkpoint_manifest_sha256 != checkpoint_hash:
+        raise SmokeReportError("evaluation checkpoint manifest hash disagrees")
+    if evaluation.device != "cuda":
+        raise SmokeReportError("diffusion smoke evaluation did not use CUDA")
     if exported.source_checkpoint_id != checkpoint.lineage.checkpoint_id:
         raise SmokeReportError("export checkpoint ID disagrees")
     if exported.source_checkpoint_manifest_sha256 != checkpoint_hash:
         raise SmokeReportError("export checkpoint manifest hash disagrees")
+    if generation.source_checkpoint_id != checkpoint.lineage.checkpoint_id:
+        raise SmokeReportError("generation checkpoint ID disagrees")
+    if generation.source_checkpoint_manifest_sha256 != checkpoint_hash:
+        raise SmokeReportError("generation checkpoint manifest hash disagrees")
+    if generation.device != "cuda":
+        raise SmokeReportError("diffusion smoke generation did not use CUDA")
     runtime = binding.runtime
     if not runtime.cuda_available or runtime.cuda_version is None:
         raise SmokeReportError("smoke checkpoint lacks CUDA runtime evidence")
@@ -498,6 +516,11 @@ def build_diffusion_smoke_report(
         validation_mean_mask_rate=evaluation.mean_mask_rate,
         validation_masked_tokens_per_second=(evaluation.masked_tokens_per_second),
         validation_model_forwards=evaluation.model_forwards,
+        evaluation_checkpoint_id=evaluation.source_checkpoint_id,
+        evaluation_checkpoint_manifest_sha256=(
+            evaluation.source_checkpoint_manifest_sha256
+        ),
+        evaluation_device="cuda",
         export_transformers_version=exported.transformers_version,
         export_fp32_max_abs_error=exported.fp32_max_abs_error,
         export_fp32_loss_abs_error=exported.fp32_loss_abs_error,
@@ -509,6 +532,11 @@ def build_diffusion_smoke_report(
             artifact.filename: artifact.sha256 for artifact in exported.artifacts
         },
         generation_prompt_token_sha256=generation.prompt_token_sha256,
+        generation_checkpoint_id=generation.source_checkpoint_id,
+        generation_checkpoint_manifest_sha256=(
+            generation.source_checkpoint_manifest_sha256
+        ),
+        generation_device="cuda",
         generation_model_forwards=generation.result.model_forwards,
         generation_diffusion_steps=generation.result.diffusion_steps,
         generation_response_canvas_length=(generation.result.response_canvas_length),

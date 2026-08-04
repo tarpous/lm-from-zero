@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -215,9 +216,15 @@ class DiffusionGenerationTests(unittest.TestCase):
         record = create_diffusion_generation_record(
             result,
             prompts,
+            source_checkpoint_id="step-000000000004",
+            source_checkpoint_manifest_sha256="c" * 64,
+            device="cpu",
             model_config_sha256="a" * 64,
             tokenizer_sha256="b" * 64,
         )
+        self.assertEqual(record.format_version, 2)
+        self.assertEqual(record.source_checkpoint_id, "step-000000000004")
+        self.assertEqual(record.device, "cpu")
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "generation.jsonl"
             append_diffusion_generation_record(output, record)
@@ -262,7 +269,11 @@ class DiffusionGenerationTests(unittest.TestCase):
                 resolved_model_config=model_config.model_dump(mode="json"),
                 tokenizer_sha256="a" * 64,
             )
-            manifest = SimpleNamespace(binding=binding)
+            manifest = SimpleNamespace(
+                binding=binding,
+                lineage=SimpleNamespace(checkpoint_id="step-000000000004"),
+                canonical_bytes=lambda: b"canonical checkpoint",
+            )
             training = SimpleNamespace(
                 status="complete",
                 tokenizer_hash="a" * 64,
@@ -323,6 +334,8 @@ class DiffusionGenerationTests(unittest.TestCase):
                         "2",
                         "--diffusion-steps",
                         "1",
+                        "--device",
+                        "cuda",
                         "--jsonl-output",
                         str(output),
                     ],
@@ -336,6 +349,13 @@ class DiffusionGenerationTests(unittest.TestCase):
             self.assertEqual(passed_config.response_length, 2)
             self.assertEqual(passed_config.diffusion_steps, 1)
             append.assert_called_once()
+            record = append.call_args.args[1]
+            self.assertEqual(record.source_checkpoint_id, "step-000000000004")
+            self.assertEqual(
+                record.source_checkpoint_manifest_sha256,
+                sha256(b"canonical checkpoint").hexdigest(),
+            )
+            self.assertEqual(record.device, "cuda")
 
 
 if __name__ == "__main__":

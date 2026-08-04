@@ -1,5 +1,45 @@
 # Session handoff: dense vertical-slice implementation
 
+## Current update (August 4, 2026)
+
+Milestone 6's bounded masked-diffusion CUDA smoke is complete locally. The
+default dry run preserved the compute-matched 528,990,208-token scheduler, then
+the compiled-bf16 integration run stopped at step 2 and resumed through step 4
+for 32,768 total tokens. All four losses and gradient norms were finite; peak
+reserved CUDA memory was 1,522,532,352 bytes. One fixed seeded validation batch
+measured 9.7700793 nats masked-reconstruction loss, a 9.7017822-nat
+eligible-normalized variational upper bound, and a 0.56640625 mask rate.
+
+The step-4 self-contained `LLaDAForMaskedDiffusion` export passed exact fp32
+logit and loss parity plus deterministic denoising-trajectory parity. Native
+CUDA generation completed an eight-token canvas in eight model forwards. The
+portable version-2 evidence is generated at
+[`reports/zero-20m-diffusion-smoke.json`](reports/zero-20m-diffusion-smoke.json).
+It binds evaluation, export, and generation to the exact step-4 checkpoint ID
+and canonical manifest hash, and records CUDA for evaluation and generation.
+
+The first real export exposed a Windows-backed WSL publication bug:
+Safetensors kept the temporary model file memory-mapped while the custom-code
+reload remained alive, so DrvFS rejected the final atomic directory rename.
+The exporter now releases and collects that reload before `os.replace`; the
+focused regression suite passes, and the real `/mnt/c` export succeeds.
+
+PyTorch also reported scalar graph breaks in diffusion input/loss validation
+guards. `torch.compile` was invoked and the bounded run completed with finite
+metrics, but the trace is partial-graph integration evidence rather than a
+full-graph compile-speed claim. Do not change capture settings retroactively;
+move or specialize the eager validation guards in a separately tested phase if
+full-graph compilation becomes an explicit goal.
+
+Milestone 7 is next after the complete offline gate and the separate approved
+commit/push boundary. Its three-seed screening and full seed-1337
+compute-matched architecture study are long GPU work and require fresh explicit
+approval. Milestone 6's four-step checkpoint is not quality-trained or
+chat-ready.
+
+The complete post-smoke offline gate passes formatting, lint, strict typing,
+CLI and lock discovery, and all 177 tests with 85.56% branch coverage.
+
 ## Current update (July 27, 2026)
 
 The Safetensors checkpoint objective described below is complete and the older

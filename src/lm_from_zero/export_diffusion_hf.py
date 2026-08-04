@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -405,6 +406,11 @@ def export_diffusion_to_hugging_face(
             source_model,
             cast(LLaDAForMaskedDiffusion, reloaded_model),
         )
+        # The custom-code reload can retain memory-mapped files beneath the
+        # temporary export until the model is collected.  Windows-backed WSL
+        # mounts then reject the final directory rename with EACCES.
+        del reloaded_model
+        gc.collect()
         paths = sorted(
             path
             for path in temporary.iterdir()

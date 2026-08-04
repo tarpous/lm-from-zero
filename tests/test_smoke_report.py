@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -33,6 +34,8 @@ PROMPT_HASH = "5" * 64
 ARTIFACT_HASH = "6" * 64
 GIT_REVISION = "7" * 40
 RECORDED_AT = datetime(2026, 7, 26, 18, 0, tzinfo=UTC)
+CHECKPOINT_ID = "step-000000000004"
+CHECKPOINT_HASH = sha256(b"canonical checkpoint").hexdigest()
 
 
 def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
@@ -141,6 +144,9 @@ def _write_generation(path: Path) -> None:
 def _write_diffusion_evaluation(path: Path) -> None:
     result = DiffusionEvaluationResult(
         evaluated_at_utc=RECORDED_AT + timedelta(minutes=1),
+        source_checkpoint_id=CHECKPOINT_ID,
+        source_checkpoint_manifest_sha256=CHECKPOINT_HASH,
+        device="cuda",
         split="validation",
         model_config_sha256=MODEL_HASH,
         shard_manifest_sha256=SHARD_HASH,
@@ -167,6 +173,9 @@ def _write_diffusion_evaluation(path: Path) -> None:
 def _write_diffusion_generation(path: Path) -> None:
     record = DiffusionGenerationRecord(
         generated_at_utc=RECORDED_AT + timedelta(minutes=2),
+        source_checkpoint_id=CHECKPOINT_ID,
+        source_checkpoint_manifest_sha256=CHECKPOINT_HASH,
+        device="cuda",
         model_config_sha256=MODEL_HASH,
         tokenizer_sha256=TOKENIZER_HASH,
         prompt_token_sha256=PROMPT_HASH,
@@ -373,6 +382,74 @@ class DenseSmokeReportTests(unittest.TestCase):
             self.assertEqual(report.validation_model_forwards, 1)
             self.assertEqual(report.generation_diffusion_steps, 2)
             self.assertTrue(report.export_deterministic_trajectory_matches)
+            self.assertEqual(report.format_version, 2)
+            self.assertEqual(report.evaluation_checkpoint_id, CHECKPOINT_ID)
+            self.assertEqual(report.generation_checkpoint_id, CHECKPOINT_ID)
+            self.assertEqual(report.generation_device, "cuda")
+
+    def test_rejects_unbound_diffusion_evaluation_and_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = self._paths(root)
+            checkpoint = _checkpoint()
+            checkpoint.binding.architecture = "masked_diffusion"
+
+            def build() -> DiffusionSmokeReport:
+                with (
+                    patch(
+                        "lm_from_zero.smoke_report.validate_checkpoint",
+                        return_value=checkpoint,
+                    ),
+                    patch(
+                        "lm_from_zero.smoke_report.load_diffusion_export_manifest",
+                        return_value=_diffusion_export(checkpoint),
+                    ),
+                ):
+                    return build_diffusion_smoke_report(
+                        training_jsonl=paths[0],
+                        checkpoint_directory=paths[1],
+                        evaluation_jsonl=paths[2],
+                        export_directory=paths[3],
+                        generation_jsonl=paths[4],
+                    )
+
+            evaluation_changes: tuple[tuple[str, object, str], ...] = (
+                ("source_checkpoint_id", "step-000000000003", "checkpoint ID"),
+                (
+                    "source_checkpoint_manifest_sha256",
+                    "9" * 64,
+                    "manifest hash",
+                ),
+                ("device", "cpu", "did not use CUDA"),
+            )
+            for field, value, error in evaluation_changes:
+                with self.subTest(artifact="evaluation", field=field):
+                    _write_diffusion_evaluation(paths[2])
+                    _write_diffusion_generation(paths[4])
+                    payload = json.loads(paths[2].read_text())
+                    payload[field] = value
+                    _write_jsonl(paths[2], [payload])
+                    with self.assertRaisesRegex(SmokeReportError, error):
+                        build()
+
+            generation_changes: tuple[tuple[str, object, str], ...] = (
+                ("source_checkpoint_id", "step-000000000003", "checkpoint ID"),
+                (
+                    "source_checkpoint_manifest_sha256",
+                    "9" * 64,
+                    "manifest hash",
+                ),
+                ("device", "cpu", "did not use CUDA"),
+            )
+            for field, value, error in generation_changes:
+                with self.subTest(artifact="generation", field=field):
+                    _write_diffusion_evaluation(paths[2])
+                    _write_diffusion_generation(paths[4])
+                    payload = json.loads(paths[4].read_text())
+                    payload[field] = value
+                    _write_jsonl(paths[4], [payload])
+                    with self.assertRaisesRegex(SmokeReportError, error):
+                        build()
 
     def test_rejects_noncanonical_and_incomplete_training_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

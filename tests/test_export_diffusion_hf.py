@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
+import weakref
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 
 import torch
@@ -342,6 +345,48 @@ class DiffusionHuggingFaceExportTests(unittest.TestCase):
                 )
             self.assertFalse(output.exists())
             self.assertEqual(list(root.glob(".failed-*")), [])
+
+    def test_releases_custom_code_reload_before_atomic_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            training_path, tokenizer = _tokenizer_artifact(root)
+            checkpoint, _ = _checkpoint(root, tokenizer)
+            output = root / "export"
+            reloaded_reference: weakref.ReferenceType[torch.nn.Module] | None = None
+            real_from_pretrained = AutoModelForMaskedLM.from_pretrained
+
+            def tracked_reload(*args: Any, **kwargs: Any) -> torch.nn.Module:
+                nonlocal reloaded_reference
+                model = cast(
+                    torch.nn.Module,
+                    real_from_pretrained(*args, **kwargs),
+                )
+                reloaded_reference = weakref.ref(model)
+                return model
+
+            def checked_publish(temporary: Path, destination: Path) -> None:
+                self.assertIsNotNone(reloaded_reference)
+                assert reloaded_reference is not None
+                self.assertIsNone(reloaded_reference())
+                os.replace(temporary, destination)
+
+            with (
+                patch.object(
+                    AutoModelForMaskedLM,
+                    "from_pretrained",
+                    side_effect=tracked_reload,
+                ),
+                patch(
+                    "lm_from_zero.export_diffusion_hf._publish_directory",
+                    side_effect=checked_publish,
+                ),
+            ):
+                export_diffusion_to_hugging_face(
+                    checkpoint,
+                    training_path,
+                    output,
+                )
+            self.assertTrue(output.is_dir())
 
     def test_rejects_wrong_architecture_existing_destination_and_corruption(
         self,

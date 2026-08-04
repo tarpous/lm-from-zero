@@ -27,6 +27,11 @@ and recurrent generation evidence is committed at
 Its independent Triton SSD path also passes the pinned `mamba-ssm` numerical
 oracle on the RTX 4080 SUPER; the generated evidence is committed at
 [`reports/zero-20m-mamba2-oracle.json`](reports/zero-20m-mamba2-oracle.json).
+The masked-diffusion 20M track now also completes its bounded compiled-bf16
+CUDA training/resume, fixed-window evaluation, self-contained export, and
+native iterative-denoising smoke. Its generated evidence is at
+[`reports/zero-20m-diffusion-smoke.json`](reports/zero-20m-diffusion-smoke.json).
+All three smoke reports are integration evidence, not model-quality claims.
 No dataset, model weight, or external service is needed for the offline test
 suite.
 
@@ -357,9 +362,9 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
 The sampler never mutates prompt tokens, always removes every response mask,
 and reports actual model forwards, total latency, and output throughput.
 `--remask-strategy low_confidence --remask-fraction <fraction>` enables
-revision before the final step. The compiled-CUDA smoke remains the final
-Milestone 6 phase. No quality-trained or chat-ready diffusion checkpoint exists
-yet.
+revision before the final step. The bounded compiled-CUDA smoke is complete,
+but its four optimizer steps do not produce a quality-trained or chat-ready
+diffusion checkpoint.
 
 Export a validated diffusion checkpoint as a self-contained local Transformers
 package:
@@ -391,6 +396,9 @@ Export refuses incomplete or mismatched lineage and verifies the cleanly
 reloaded artifact against the internal model for fp32 logits, the weighted
 diffusion loss, and a deterministic denoising trajectory. A persisted derived
 RoPE-frequency buffer keeps parity under Transformers' meta-device loading.
+The parity reload is explicitly released before atomic directory publication;
+this avoids a Safetensors memory-map rename failure on Windows-backed WSL while
+preserving the same-filesystem `os.replace` contract.
 This command is entirely local; it does not publish to the Hugging Face Hub.
 
 Focused export verification:
@@ -421,6 +429,10 @@ model forwards, and masked-token throughput. It explicitly marks causal
 perplexity as inapplicable; these values must not be placed in the dense/Mamba
 perplexity column. Reusing the same checkpoint, fixed windows, and seed
 reproduces the corruption trajectory.
+Version-2 diffusion evaluation and generation records also carry the exact
+checkpoint ID and canonical manifest hash; generation records the execution
+device. The smoke-report builder rejects records that are not bound to the
+selected checkpoint or were not produced on CUDA.
 
 ## Training checkpoints
 
@@ -813,7 +825,11 @@ source revision. The Mamba-2 form also records cached export parity and the
 grouped-normalization auto-model requirement. The intentionally untrained
 generation output is not treated as a quality result. The diffusion form records
 masked reconstruction, its variational upper bound, clean custom-code export
-parity, and iterative-denoising work without a causal-perplexity field.
+parity, exact evaluation/generation checkpoint bindings, and
+iterative-denoising work without a causal-perplexity field. Its current
+compiled training trace includes graph breaks in eager runtime-validation
+guards, so the recorded throughput is partial-graph integration evidence, not
+a full-graph compile-speed claim.
 
 ## TinyStories tokenizer sample
 
