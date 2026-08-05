@@ -543,7 +543,11 @@ screening/full stop steps, output paths, and checkpoint-storage bounds:
 PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
   plan-architecture-study \
   artifacts/shards/tinystories-16k/build.json \
-  --output artifacts/architecture-study/plan.json
+  --output artifacts/architecture-study/plan.json \
+  --dense-tokens-per-second 391158.0927904619 \
+  --mamba2-tokens-per-second 166019.2591970272 \
+  --diffusion-tokens-per-second 430108.6269484941 \
+  --diffusion-adamw-backend fused
 ```
 
 The generated plan is ignored local evidence. Every lineage uses its full
@@ -554,11 +558,14 @@ must not use shorter screening-only schedulers.
 
 All three pretraining commands accept `--seed`; it controls both model/RNG
 initialization and deterministic shard order and is included in the canonical
-training-configuration hash. The planner leaves wall-time estimates unset
-until synchronized 50-100-step calibration measurements exist. Do not use the
-four-step compile smokes as sustained-throughput estimates. The nine-lineage
-retention upper bound is about 8.65 GB before exports, telemetry, and transient
-atomic-publication space, so verify at least 15 GiB free before the study.
+training-configuration hash. The plan now uses the synchronized Milestone-6A
+rates and records the promoted fused AdamW backend only for diffusion. Do not
+use the four-step compile smokes as sustained-throughput estimates. The
+nine-lineage retention upper bound is about 8.65 GB before exports, telemetry,
+and transient atomic-publication space, so verify at least 15 GiB free before
+the study. The current plan's screening/full compute-only estimates are about
+4.26/21.30 minutes per dense lineage, 12.16/60.79 minutes per Mamba-2 lineage,
+and 4.10/20.50 minutes per diffusion lineage.
 
 The calibration and screening/full runs require explicit GPU approval. They
 must use the plan's seed-specific artifact paths and `--stop-after-optimizer-step`

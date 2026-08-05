@@ -47,6 +47,7 @@ class ArchitectureStudyPlanTests(unittest.TestCase):
     def test_exact_matrix_budgets_and_full_scheduler_semantics(self) -> None:
         plan = self._plan()
         self.assertEqual(plan.format_version, 1)
+        self.assertEqual(plan.diffusion_adamw_backend, "auto")
         self.assertEqual(len(plan.lineages), 9)
         self.assertEqual(
             tuple((item.architecture, item.seed) for item in plan.lineages),
@@ -81,6 +82,7 @@ class ArchitectureStudyPlanTests(unittest.TestCase):
                 lineage.parquet_log,
                 str(Path(lineage.jsonl_log).with_suffix(".parquet")).replace("\\", "/"),
             )
+            self.assertEqual(lineage.adamw_backend, "auto")
         self.assertEqual(
             len({item.checkpoint_directory for item in plan.lineages}),
             9,
@@ -141,6 +143,11 @@ class ArchitectureStudyPlanTests(unittest.TestCase):
                 dense.screening.tokens_consumed / 1_000,
             )
 
+            self.assertEqual(
+                plan.lineages[-1].adamw_backend,
+                "auto",
+            )
+
             temporary = output.with_name(f".{output.name}.tmp")
             temporary.write_text("incomplete", encoding="utf-8")
             with self.assertRaisesRegex(ArchitectureStudyError, "incomplete"):
@@ -168,6 +175,19 @@ class ArchitectureStudyPlanTests(unittest.TestCase):
                     "build.json",
                     dense_tokens_per_second=0,
                 )
+
+            fused = create_architecture_study_plan(
+                "build.json",
+                diffusion_adamw_backend="fused",
+            )
+            self.assertEqual(fused.diffusion_adamw_backend, "fused")
+            self.assertTrue(
+                all(
+                    lineage.adamw_backend == "fused"
+                    for lineage in fused.lineages
+                    if lineage.architecture == "diffusion"
+                )
+            )
 
         plan = self._plan()
         payload = plan.model_dump(mode="json")

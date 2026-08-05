@@ -482,6 +482,7 @@ def plan_architecture_study_command(
     diffusion_tokens_per_second: Annotated[
         float | None, typer.Option(min=1e-12)
     ] = None,
+    diffusion_adamw_backend: Literal["auto", "foreach", "fused"] = "auto",
 ) -> None:
     """Freeze all nine full-scheduler lineages before architecture-study runs."""
 
@@ -499,6 +500,7 @@ def plan_architecture_study_command(
         dense_tokens_per_second=dense_tokens_per_second,
         mamba2_tokens_per_second=mamba2_tokens_per_second,
         diffusion_tokens_per_second=diffusion_tokens_per_second,
+        diffusion_adamw_backend=diffusion_adamw_backend,
     )
     if output is not None:
         write_architecture_study_plan(output, plan)

@@ -25,6 +25,7 @@ from lm_from_zero.training import (
 )
 
 Architecture = Literal["dense", "mamba2", "diffusion"]
+AdamWBackend = Literal["auto", "foreach", "fused"]
 ModelConfig = Olmo2Config | Mamba2Config | MaskedDiffusionConfig
 TrainingConfig = DenseTrainingConfig | Mamba2TrainingConfig | DiffusionTrainingConfig
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -57,6 +58,7 @@ class ArchitectureStudyLineagePlan(BaseModel):
     architecture: Architecture
     seed: int
     continues_to_full: bool
+    adamw_backend: AdamWBackend
     training_config_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
     model_config_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
     parameter_count: Annotated[int, Field(gt=0)]
@@ -111,6 +113,7 @@ class ArchitectureStudyPlan(BaseModel):
     world_size: Literal[1]
     screening_dense_reference_tokens: Annotated[int, Field(gt=0)]
     full_dense_reference_tokens: Annotated[int, Field(gt=0)]
+    diffusion_adamw_backend: AdamWBackend
     lineages: tuple[ArchitectureStudyLineagePlan, ...]
 
     @model_validator(mode="after")
@@ -194,6 +197,7 @@ def create_architecture_study_plan(
     dense_tokens_per_second: float | None = None,
     mamba2_tokens_per_second: float | None = None,
     diffusion_tokens_per_second: float | None = None,
+    diffusion_adamw_backend: AdamWBackend = "auto",
 ) -> ArchitectureStudyPlan:
     """Resolve all nine full-scheduler lineages without allocating a model."""
 
@@ -257,6 +261,9 @@ def create_architecture_study_plan(
                 estimated_tokens_per_second=throughputs[architecture],
             )
             optimization = OptimizationConfig(total_steps=full.optimizer_step)
+            lineage_adamw_backend: AdamWBackend = (
+                diffusion_adamw_backend if architecture == "diffusion" else "auto"
+            )
             common = {
                 "model": model,
                 "batch": batch,
@@ -265,6 +272,7 @@ def create_architecture_study_plan(
                 "device": "cuda",
                 "precision": "bf16",
                 "compile_model": True,
+                "adamw_backend": lineage_adamw_backend,
                 "seed": seed,
             }
             training: TrainingConfig
@@ -282,6 +290,7 @@ def create_architecture_study_plan(
                     architecture=architecture,
                     seed=seed,
                     continues_to_full=seed == 1_337,
+                    adamw_backend=lineage_adamw_backend,
                     training_config_sha256=training.config_hash,
                     model_config_sha256=model.config_hash,
                     parameter_count=model.parameter_breakdown().total,
@@ -313,6 +322,7 @@ def create_architecture_study_plan(
         world_size=1,
         screening_dense_reference_tokens=screening_dense_reference_tokens,
         full_dense_reference_tokens=full_dense_reference_tokens,
+        diffusion_adamw_backend=diffusion_adamw_backend,
         lineages=tuple(lineages),
     )
 
