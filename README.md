@@ -35,6 +35,15 @@ All three smoke reports are integration evidence, not model-quality claims.
 No dataset, model weight, or external service is needed for the offline test
 suite.
 
+Milestone 6A's synchronized acceleration calibration is also complete. The
+machine-readable report contains all 26 planned cells across the three tracks
+and three validated repetitions per cell:
+[`reports/zero-20m-acceleration-calibration.json`](reports/zero-20m-acceleration-calibration.json).
+No dense or Mamba candidate passed the frozen promotion gates. Diffusion's
+fused AdamW candidate passed with a 13.61% end-to-end median speedup and is the
+only promoted calibration choice; this does not replace the scientific
+objective or begin the long architecture study.
+
 ## Environment
 
 The primary target is the `Ubuntu-24.04` WSL2 distro with Python 3.12 and `uv`.

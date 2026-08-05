@@ -1,5 +1,32 @@
 # Session handoff: dense vertical-slice implementation
 
+## Current update (August 5, 2026, Milestone 6A calibration complete)
+
+The fixed-step acceleration calibration is complete on the RTX 4080 SUPER at
+clean revision `d69351425a8f8b6e3fe3e2e07836c8d007161f4e`. The canonical report
+is [`reports/zero-20m-acceleration-calibration.json`](reports/zero-20m-acceleration-calibration.json)
+and contains 78 validated results: 26 cells across dense, Mamba-2, and
+diffusion, with three fresh-process repetitions per cell. Every result has the
+exact 50 warm-up plus 500 measured-step contract, complete checkpoint/trace/
+event/manifest hashes, and matching plan, model, tokenizer, shard, seed, and
+revision bindings. The 5% stability gate passed for every reported cell.
+
+Frozen outcomes under the predeclared 10% end-to-end speedup and numerical
+parity gates:
+
+- Dense: no promotion. The fastest candidates were max-autotune-no-cudagraphs
+  (+18.91%) and max-autotune (+16.98%), but both failed loss/gradient parity.
+- Mamba-2: no promotion. Max-autotune was fastest (+6.76%) but below the speed
+  gate; fused AdamW was +4.56% and narrowly failed loss parity.
+- Diffusion: `fused-adamw` is promoted at +13.61% with parity passing. Its
+  median optimizer time fell about 58.6% with effectively unchanged memory.
+
+Diffusion Flash-SDPA was proven eligible and faster, but failed parity; linear
+cross-entropy was fastest and reduced memory, but failed gradient parity. Keep
+the dense and Mamba compiled-default baselines, and use fused AdamW only for
+the diffusion track unless a separately approved parity study changes these
+decisions. No Milestone-7 long training run was started by this calibration.
+
 ## Current update (August 5, 2026, Milestone 6A dense executor smoke)
 
 Milestone 6A's implementation was committed and pushed as
