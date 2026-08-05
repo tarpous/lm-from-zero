@@ -175,7 +175,9 @@ class AccelerationExecutionTests(unittest.TestCase):
             self.assertTrue(
                 diffusion.training_config["diffusion_padding_free_attention"]
             )
-            self.assertEqual(diffusion.total_optimizer_steps, 150)
+            self.assertEqual(diffusion.total_optimizer_steps, 550)
+            self.assertEqual(diffusion.measured_optimizer_steps, 500)
+            self.assertEqual(diffusion.format_version, 3)
             self.assertTrue(diffusion.result_path.endswith("repetition-03/result.json"))
             require_executable_calibration_cell(diffusion)
             self.assertTrue(diffusion.execution_ready)

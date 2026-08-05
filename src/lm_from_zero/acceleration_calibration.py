@@ -130,7 +130,7 @@ class AccelerationCalibrationPlan(_CanonicalModel):
     format: Literal["lm-from-zero-acceleration-calibration-plan"] = (
         "lm-from-zero-acceleration-calibration-plan"
     )
-    format_version: Literal[2] = 2
+    format_version: Literal[3] = 3
     repository_revision: GitRevision
     expected_cuda_device_name: str = Field(min_length=1)
     shard_manifest_sha256: Sha256
@@ -141,12 +141,13 @@ class AccelerationCalibrationPlan(_CanonicalModel):
     micro_batch_size: Annotated[int, Field(gt=0)]
     gradient_accumulation_steps: Annotated[int, Field(gt=0)]
     world_size: Literal[1] = 1
-    warmup_optimizer_steps: Annotated[int, Field(ge=3)]
-    measured_optimizer_steps: Annotated[int, Field(gt=0)]
-    minimum_measured_seconds: Annotated[float, Field(gt=0)]
-    repetitions: Annotated[int, Field(gt=0)]
+    warmup_optimizer_steps: Literal[50]
+    measurement_mode: Literal["fixed-steps"] = "fixed-steps"
+    measured_optimizer_steps: Literal[500]
+    repetitions: Literal[3] = 3
     telemetry_interval_steps: Annotated[int, Field(gt=1)]
     promotion_minimum_speedup: Annotated[float, Field(ge=1)]
+    maximum_throughput_relative_spread: Annotated[float, Field(gt=0, lt=1)]
     maximum_loss_absolute_delta: Annotated[float, Field(ge=0)]
     maximum_gradient_absolute_delta: Annotated[float, Field(ge=0)]
     maximum_update_absolute_delta: Annotated[float, Field(ge=0)]
@@ -155,6 +156,10 @@ class AccelerationCalibrationPlan(_CanonicalModel):
 
     @model_validator(mode="after")
     def validate_matrix(self) -> Self:
+        if self.measured_optimizer_steps % self.telemetry_interval_steps != 0:
+            raise ValueError(
+                "measured optimizer steps must align to the telemetry interval"
+            )
         expected = _cell_specs(self.telemetry_interval_steps)
         realized = [(cell.architecture, cell.cell_id) for cell in self.cells]
         expected_keys = [
@@ -234,7 +239,7 @@ class CalibrationResult(_CanonicalModel):
     format: Literal["lm-from-zero-acceleration-calibration-result"] = (
         "lm-from-zero-acceleration-calibration-result"
     )
-    format_version: Literal[2] = 2
+    format_version: Literal[3] = 3
     plan_sha256: Sha256
     cell_sha256: Sha256
     repository_revision: GitRevision
@@ -325,6 +330,9 @@ class CalibrationCellSummary(_CanonicalModel):
     median_tokens_per_second: Annotated[float, Field(gt=0)]
     baseline_median_tokens_per_second: Annotated[float, Field(gt=0)]
     speedup_over_baseline: Annotated[float, Field(gt=0)]
+    throughput_relative_spread: Annotated[float, Field(ge=0)]
+    baseline_throughput_relative_spread: Annotated[float, Field(ge=0)]
+    throughput_stability_passed: bool
     maximum_loss_absolute_delta: Annotated[float, Field(ge=0)]
     maximum_gradient_absolute_delta: Annotated[float, Field(ge=0)]
     maximum_update_absolute_delta: Annotated[float, Field(ge=0)]
@@ -337,6 +345,8 @@ class CalibrationCellSummary(_CanonicalModel):
             raise ValueError("baseline cannot be promoted")
         if self.promoted and not self.numerical_parity_passed:
             raise ValueError("a promoted cell must pass numerical parity")
+        if self.promoted and not self.throughput_stability_passed:
+            raise ValueError("a promoted cell must pass throughput stability")
         return self
 
 
@@ -346,10 +356,11 @@ class AccelerationCalibrationReport(_CanonicalModel):
     format: Literal["lm-from-zero-acceleration-calibration-report"] = (
         "lm-from-zero-acceleration-calibration-report"
     )
-    format_version: Literal[1] = 1
+    format_version: Literal[2] = 2
     plan_sha256: Sha256
     result_count: Annotated[int, Field(gt=0)]
     promotion_minimum_speedup: Annotated[float, Field(ge=1)]
+    maximum_throughput_relative_spread: Annotated[float, Field(gt=0, lt=1)]
     summaries: tuple[CalibrationCellSummary, ...]
 
 
@@ -443,17 +454,19 @@ def _file_sha256(path: Path) -> str:
 def create_plan(
     build_manifest: str | Path,
     *,
-    artifact_root: str | Path = "artifacts/acceleration-calibration/results",
+    artifact_root: str | Path = (
+        "artifacts/acceleration-calibration/fixed-500-results"
+    ),
     seed: int = 1_337,
     sequence_length: Literal[1_024] = 1_024,
     micro_batch_size: int = 8,
     gradient_accumulation_steps: int = 1,
-    warmup_optimizer_steps: int = 50,
-    measured_optimizer_steps: int = 100,
-    minimum_measured_seconds: float = 60.0,
-    repetitions: int = 3,
+    warmup_optimizer_steps: Literal[50] = 50,
+    measured_optimizer_steps: Literal[500] = 500,
+    repetitions: Literal[3] = 3,
     telemetry_interval_steps: int = 50,
     promotion_minimum_speedup: float = 1.10,
+    maximum_throughput_relative_spread: float = 0.05,
     maximum_loss_absolute_delta: float = 1e-4,
     maximum_gradient_absolute_delta: float = 1e-3,
     maximum_update_absolute_delta: float = 1e-3,
@@ -504,10 +517,10 @@ def create_plan(
         gradient_accumulation_steps=gradient_accumulation_steps,
         warmup_optimizer_steps=warmup_optimizer_steps,
         measured_optimizer_steps=measured_optimizer_steps,
-        minimum_measured_seconds=minimum_measured_seconds,
         repetitions=repetitions,
         telemetry_interval_steps=telemetry_interval_steps,
         promotion_minimum_speedup=promotion_minimum_speedup,
+        maximum_throughput_relative_spread=maximum_throughput_relative_spread,
         maximum_loss_absolute_delta=maximum_loss_absolute_delta,
         maximum_gradient_absolute_delta=maximum_gradient_absolute_delta,
         maximum_update_absolute_delta=maximum_update_absolute_delta,
@@ -702,12 +715,9 @@ def _validate_result_binding(
         )
     if result.repetition > plan.repetitions:
         raise AccelerationCalibrationError("result repetition exceeds the plan")
-    if (
-        result.measured_optimizer_steps < plan.measured_optimizer_steps
-        and result.measured_end_to_end_seconds < plan.minimum_measured_seconds
-    ):
+    if result.measured_optimizer_steps != plan.measured_optimizer_steps:
         raise AccelerationCalibrationError(
-            "result measurement window is shorter than both planned alternatives"
+            "result measurement window does not match the fixed-step plan"
         )
     if (
         cell.settings.sdpa_backend == "flash"
@@ -760,13 +770,16 @@ def build_report(
             )
 
     baseline_medians: dict[Architecture, float] = {}
+    baseline_spreads: dict[Architecture, float] = {}
     for architecture in ARCHITECTURES:
-        baseline_medians[architecture] = float(
-            median(
-                indexed[(architecture, "baseline", repetition)].tokens_per_second
-                for repetition in range(1, plan.repetitions + 1)
-            )
-        )
+        baseline_values = [
+            indexed[(architecture, "baseline", repetition)].tokens_per_second
+            for repetition in range(1, plan.repetitions + 1)
+        ]
+        baseline_medians[architecture] = float(median(baseline_values))
+        baseline_spreads[architecture] = (
+            max(baseline_values) - min(baseline_values)
+        ) / baseline_medians[architecture]
 
     summaries: list[CalibrationCellSummary] = []
     for cell in plan.cells:
@@ -778,6 +791,15 @@ def build_report(
             median(item.tokens_per_second for item in repetitions)
         )
         baseline_throughput = baseline_medians[cell.architecture]
+        throughput_spread = (
+            max(item.tokens_per_second for item in repetitions)
+            - min(item.tokens_per_second for item in repetitions)
+        ) / median_throughput
+        baseline_spread = baseline_spreads[cell.architecture]
+        throughput_stability = (
+            throughput_spread <= plan.maximum_throughput_relative_spread
+            and baseline_spread <= plan.maximum_throughput_relative_spread
+        )
         loss_deltas = [item.maximum_loss_absolute_delta for item in repetitions]
         gradient_deltas = [item.maximum_gradient_absolute_delta for item in repetitions]
         update_deltas = [item.maximum_update_absolute_delta for item in repetitions]
@@ -813,6 +835,9 @@ def build_report(
                 median_tokens_per_second=median_throughput,
                 baseline_median_tokens_per_second=baseline_throughput,
                 speedup_over_baseline=speedup,
+                throughput_relative_spread=throughput_spread,
+                baseline_throughput_relative_spread=baseline_spread,
+                throughput_stability_passed=throughput_stability,
                 maximum_loss_absolute_delta=maximum_loss_delta,
                 maximum_gradient_absolute_delta=maximum_gradient_delta,
                 maximum_update_absolute_delta=maximum_update_delta,
@@ -820,6 +845,7 @@ def build_report(
                 promoted=(
                     cell.cell_id != "baseline"
                     and parity
+                    and throughput_stability
                     and speedup >= plan.promotion_minimum_speedup
                 ),
             )
@@ -828,6 +854,7 @@ def build_report(
         plan_sha256=plan.artifact_sha256,
         result_count=len(results),
         promotion_minimum_speedup=plan.promotion_minimum_speedup,
+        maximum_throughput_relative_spread=(plan.maximum_throughput_relative_spread),
         summaries=tuple(summaries),
     )
 

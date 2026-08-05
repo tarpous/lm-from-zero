@@ -153,16 +153,18 @@ class AccelerationCalibrationTests(unittest.TestCase):
     def test_plan_is_synchronized_staged_and_non_cartesian(self) -> None:
         plan = self._plan()
 
-        self.assertEqual(plan.format_version, 2)
+        self.assertEqual(plan.format_version, 3)
         self.assertEqual(len(plan.cells), 26)
         self.assertEqual(plan.sequence_length, 1_024)
         self.assertEqual(plan.warmup_optimizer_steps, 50)
-        self.assertEqual(plan.measured_optimizer_steps, 100)
-        self.assertEqual(plan.minimum_measured_seconds, 60.0)
+        self.assertEqual(plan.measurement_mode, "fixed-steps")
+        self.assertEqual(plan.measured_optimizer_steps, 500)
+        self.assertEqual(plan.maximum_throughput_relative_spread, 0.05)
         self.assertEqual(plan.repetitions, 3)
         self.assertEqual(plan.repository_revision, REVISION)
         self.assertEqual(
-            plan.artifact_root, "artifacts/acceleration-calibration/results"
+            plan.artifact_root,
+            "artifacts/acceleration-calibration/fixed-500-results",
         )
         expected_counts = {"dense": 9, "mamba2": 8, "diffusion": 9}
         for architecture in ARCHITECTURES:
@@ -242,8 +244,82 @@ class AccelerationCalibrationTests(unittest.TestCase):
             self.assertAlmostEqual(sampled.median_tokens_per_second, 115.0)
             self.assertAlmostEqual(sampled.speedup_over_baseline, 1.15)
             self.assertTrue(sampled.numerical_parity_passed)
+            self.assertTrue(sampled.throughput_stability_passed)
             self.assertTrue(sampled.promoted)
             self.assertFalse(fused.promoted)
+
+    def test_promotion_rejects_unstable_repetition_throughput(self) -> None:
+        plan = self._plan()
+        results = self._results(plan)
+        index = next(
+            index
+            for index, result in enumerate(results)
+            if result.architecture == "dense"
+            and result.cell_id == "sampled-telemetry"
+            and result.repetition == 1
+        )
+        result = results[index]
+        results[index] = result.model_copy(
+            update={
+                "tokens_per_second": 150.0,
+                "measured_end_to_end_seconds": (
+                    result.measured_end_to_end_seconds
+                    * result.tokens_per_second
+                    / 150.0
+                ),
+            }
+        )
+
+        report = build_report(plan, results)
+        sampled = next(
+            summary
+            for summary in report.summaries
+            if summary.architecture == "dense"
+            and summary.cell_id == "sampled-telemetry"
+        )
+
+        self.assertFalse(sampled.throughput_stability_passed)
+        self.assertFalse(sampled.promoted)
+
+        results = self._results(plan)
+        baseline_index = next(
+            index
+            for index, result in enumerate(results)
+            if result.architecture == "dense"
+            and result.cell_id == "baseline"
+            and result.repetition == 1
+        )
+        baseline = results[baseline_index]
+        unstable_baseline = baseline.model_copy(
+            update={
+                "tokens_per_second": 150.0,
+                "measured_end_to_end_seconds": (
+                    baseline.measured_end_to_end_seconds
+                    * baseline.tokens_per_second
+                    / 150.0
+                ),
+            }
+        )
+        results[baseline_index] = unstable_baseline
+        for result_index, candidate in enumerate(results):
+            if (
+                candidate.architecture == "dense"
+                and candidate.cell_id != "baseline"
+                and candidate.repetition == 1
+            ):
+                results[result_index] = candidate.model_copy(
+                    update={"baseline_result_sha256": unstable_baseline.artifact_sha256}
+                )
+
+        report = build_report(plan, results)
+        sampled = next(
+            summary
+            for summary in report.summaries
+            if summary.architecture == "dense"
+            and summary.cell_id == "sampled-telemetry"
+        )
+        self.assertFalse(sampled.throughput_stability_passed)
+        self.assertFalse(sampled.promoted)
 
     def test_rejects_missing_duplicate_mismatch_and_missing_parity(self) -> None:
         plan = self._plan()
@@ -300,22 +376,38 @@ class AccelerationCalibrationTests(unittest.TestCase):
         with self.assertRaisesRegex(AccelerationCalibrationError, "wrong baseline"):
             build_report(plan, wrong_baseline)
 
-    def test_rejects_short_measurement_and_noncanonical_matrix(self) -> None:
+    def test_rejects_nonmatching_measurement_and_noncanonical_matrix(self) -> None:
         plan = self._plan()
         results = self._results(plan)
         results[0] = results[0].model_copy(
             update={
-                "measured_end_to_end_seconds": 59.9,
                 "measured_optimizer_steps": plan.measured_optimizer_steps - 1,
             }
         )
-        with self.assertRaisesRegex(AccelerationCalibrationError, "alternatives"):
+        with self.assertRaisesRegex(AccelerationCalibrationError, "fixed-step"):
+            build_report(plan, results)
+
+        results = self._results(plan)
+        results[0] = results[0].model_copy(
+            update={"measured_optimizer_steps": plan.measured_optimizer_steps + 1}
+        )
+        with self.assertRaisesRegex(AccelerationCalibrationError, "fixed-step"):
             build_report(plan, results)
 
         payload = plan.model_dump(mode="json")
         payload["cells"][0]["settings"]["compile_mode"] = "disabled"
         with self.assertRaisesRegex(ValidationError, "staged settings"):
             AccelerationCalibrationPlan.model_validate(payload)
+
+        for field, value in (
+            ("warmup_optimizer_steps", 49),
+            ("measured_optimizer_steps", 499),
+            ("repetitions", 2),
+        ):
+            payload = plan.model_dump(mode="json")
+            payload[field] = value
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                AccelerationCalibrationPlan.model_validate(payload)
 
         result_payload = self._results(plan)[0].model_dump(mode="json")
         result_payload["unexpected"] = True
@@ -425,7 +517,7 @@ class AccelerationCalibrationTests(unittest.TestCase):
                     ],
                 )
             self.assertEqual(planned.exit_code, 0, planned.output)
-            self.assertEqual(json.loads(planned.stdout)["format_version"], 2)
+            self.assertEqual(json.loads(planned.stdout)["format_version"], 3)
 
             inspected = CliRunner().invoke(
                 app,

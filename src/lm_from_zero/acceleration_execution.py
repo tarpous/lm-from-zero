@@ -90,7 +90,7 @@ class CalibrationCellDryRun(BaseModel):
     format: Literal["lm-from-zero-acceleration-calibration-cell-dry-run"] = (
         "lm-from-zero-acceleration-calibration-cell-dry-run"
     )
-    format_version: Literal[2] = 2
+    format_version: Literal[3] = 3
     plan_sha256: Sha256
     cell_sha256: Sha256
     repository_revision: GitRevision

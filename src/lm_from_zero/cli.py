@@ -664,14 +664,10 @@ def plan_acceleration_calibration_command(
     build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
     output: Annotated[Path | None, typer.Option()] = None,
     artifact_root: Annotated[Path, typer.Option()] = Path(
-        "artifacts/acceleration-calibration/results"
+        "artifacts/acceleration-calibration/fixed-500-results"
     ),
     micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
     gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
-    warmup_optimizer_steps: Annotated[int, typer.Option(min=3)] = 50,
-    measured_optimizer_steps: Annotated[int, typer.Option(min=1)] = 100,
-    minimum_measured_seconds: Annotated[float, typer.Option(min=1e-6)] = 60.0,
-    repetitions: Annotated[int, typer.Option(min=1)] = 3,
     telemetry_interval_steps: Annotated[int, typer.Option(min=2)] = 50,
     expected_cuda_device_name: Annotated[str, typer.Option()] = (
         "NVIDIA GeForce RTX 4080 SUPER"
@@ -698,10 +694,6 @@ def plan_acceleration_calibration_command(
         artifact_root=artifact_root,
         micro_batch_size=micro_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        warmup_optimizer_steps=warmup_optimizer_steps,
-        measured_optimizer_steps=measured_optimizer_steps,
-        minimum_measured_seconds=minimum_measured_seconds,
-        repetitions=repetitions,
         telemetry_interval_steps=telemetry_interval_steps,
         expected_cuda_device_name=expected_cuda_device_name,
     )

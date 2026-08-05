@@ -72,8 +72,11 @@ Milestone 6A calibration begins with the CPU-only
 `plan-acceleration-calibration` command from a clean committed revision. Its
 instrumented per-cell CUDA executor and all measurement artifacts remain
 approval-gated; run baselines before candidates and never hand-author
-calibration results. Run the focused contract tests with `PYTHONPATH=src uv run
---frozen pytest tests/test_acceleration_calibration.py
+calibration results. A short CUDA smoke validates execution and artifact
+integrity only; promotion requires all three fixed-step repetitions to pass
+the numerical and throughput-stability gates. Run the focused contract tests
+with `PYTHONPATH=src uv run --frozen pytest
+tests/test_acceleration_calibration.py
 tests/test_acceleration_execution.py tests/test_acceleration_runtime.py
 tests/test_acceleration_statistics.py --no-cov`.
 Checkpoint evaluation must use fixed non-wrapping shard windows. Checkpoints

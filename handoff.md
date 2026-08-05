@@ -1,5 +1,32 @@
 # Session handoff: dense vertical-slice implementation
 
+## Current update (August 5, 2026, Milestone 6A dense executor smoke)
+
+Milestone 6A's implementation was committed and pushed as
+`d1a8c17f5fa44184036c06b5862338fb2a9ef721`. The clean-revision calibration
+plan bound that commit and the RTX 4080 SUPER, and one explicitly approved
+`dense/baseline/repetition-01` execution completed its 50 warm-up plus 100
+measured optimizer steps. Its artifacts, hashes, 102-event log, numerical
+trace, and step-150 recovery checkpoint all validate. The measured interval was
+1.87462058 seconds for 819,200 tokens (436,995 tokens/second), with Flash SDPA,
+zero graph breaks, and finite loss/gradient evidence.
+
+This result is retained as instrumentation smoke evidence only and must not be
+mixed into promotion reporting. Its window was too short for the 10% gate.
+CUDA-event compute was 1.75679 seconds and optimizer timing was 0.23408 seconds;
+their 1.99087-second sum exceeds the enclosing host interval because compiled
+or multi-stream component timers are non-additive. Do not calculate residual
+overhead from those components.
+
+The corrective offline phase now fixes the plan at exactly 500 measured steps
+after 50 warm-up steps, requires exact step binding, and adds a 5% maximum
+relative throughput-spread gate across all three fresh-process repetitions.
+Its full offline gate passes Ruff formatting/lint, strict mypy across 74 files,
+all 224 tests, and 85.05% total branch coverage. Publish this correction as the
+next revision after `d1a8c17`, regenerate a clean-revision plan under the fresh
+`fixed-500-results` root, and request approval before the replacement dense
+baseline GPU run. Do not start candidates or Milestone 7.
+
 ## Current update (August 5, 2026, Milestone 6A implementation gate)
 
 The previous architecture-study planner revision is pushed: local `HEAD` and
