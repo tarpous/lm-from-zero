@@ -1,0 +1,139 @@
+{
+  "format": "lm-from-zero-architecture-study-report",
+  "format_version": 1,
+  "status": "complete",
+  "git_revision": "53d071b46d600cfc50b53ab09f0a5611e9f28f8c",
+  "plan_sha256": "1e90a33f98c53ec86576290c992be7f9d76e6a4b7c2c2386136ae3e3650d487e",
+  "artifact_root": "artifacts/architecture-study",
+  "full_dense_reference_tokens": 500000000,
+  "screening_dense_reference_tokens": 100000000,
+  "lineage_count": 9,
+  "canonical_checkpoint_count": 15,
+  "canonical_artifact_bytes": 3874323256,
+  "retained_checkpoint_upper_bound_bytes": 8648846784,
+  "free_space_bytes_at_audit": 150323855360,
+  "lineages": [
+    {
+      "architecture": "dense",
+      "seed": 1337,
+      "terminal_stage": "full",
+      "optimizer_step": 61036,
+      "tokens_consumed": 500006912,
+      "terminal_event": "run_complete",
+      "compute_seconds": 1310.775,
+      "event_wall_seconds": 2352.798,
+      "training_config_sha256": "0a8bda0ec01938c571f1aa3b78ccd06ee1193153307da806b5393bd75723cde1",
+      "checkpoint": "artifacts/architecture-study/dense/seed-1337/checkpoints/step-000000061036"
+    },
+    {
+      "architecture": "dense",
+      "seed": 2027,
+      "terminal_stage": "screening",
+      "optimizer_step": 12208,
+      "tokens_consumed": 100007936,
+      "terminal_event": "run_stopped",
+      "compute_seconds": 258.929,
+      "event_wall_seconds": 453.691,
+      "training_config_sha256": "bc11f6b34a02dd0d578d792dcca5e121dadf111f6543c762a383c25da9b877a1",
+      "checkpoint": "artifacts/architecture-study/dense/seed-2027/checkpoints/step-000000012208"
+    },
+    {
+      "architecture": "dense",
+      "seed": 3407,
+      "terminal_stage": "screening",
+      "optimizer_step": 12208,
+      "tokens_consumed": 100007936,
+      "terminal_event": "run_stopped",
+      "compute_seconds": 258.421,
+      "event_wall_seconds": 458.507,
+      "training_config_sha256": "b645b5d5202e3fc227f368556b4774eb1001329f921d7606aaf508605e002724",
+      "checkpoint": "artifacts/architecture-study/dense/seed-3407/checkpoints/step-000000012208"
+    },
+    {
+      "architecture": "mamba2",
+      "seed": 1337,
+      "terminal_stage": "full",
+      "optimizer_step": 73919,
+      "tokens_consumed": 605544448,
+      "terminal_event": "run_complete",
+      "compute_seconds": 3630.512,
+      "event_wall_seconds": 7650.514,
+      "training_config_sha256": "fc63390d780530813306c909fb187c0a767d6ca68c597ca100b0a8e4071bf4fa",
+      "checkpoint": "artifacts/architecture-study/mamba2/seed-1337/checkpoints/step-000000073919"
+    },
+    {
+      "architecture": "mamba2",
+      "seed": 2027,
+      "terminal_stage": "screening",
+      "optimizer_step": 14784,
+      "tokens_consumed": 121110528,
+      "terminal_event": "run_stopped",
+      "compute_seconds": 722.871,
+      "event_wall_seconds": 746.091,
+      "training_config_sha256": "213f53714d1e50b289eb2acae6fa35a271ef2f0c40b65e27d7c69fa7f4c09595",
+      "checkpoint": "artifacts/architecture-study/mamba2/seed-2027/checkpoints/step-000000014784"
+    },
+    {
+      "architecture": "mamba2",
+      "seed": 3407,
+      "terminal_stage": "screening",
+      "optimizer_step": 14784,
+      "tokens_consumed": 121110528,
+      "terminal_event": "run_stopped",
+      "compute_seconds": 721.487,
+      "event_wall_seconds": 744.867,
+      "training_config_sha256": "612226a964f501706935f87158ae486ef86b0f3f301fa26042be96f9ce2dba08",
+      "checkpoint": "artifacts/architecture-study/mamba2/seed-3407/checkpoints/step-000000014784"
+    },
+    {
+      "architecture": "diffusion",
+      "seed": 1337,
+      "terminal_stage": "full",
+      "optimizer_step": 64574,
+      "tokens_consumed": 528990208,
+      "terminal_event": "run_complete",
+      "compute_seconds": 1313.311,
+      "event_wall_seconds": 3532.324,
+      "training_config_sha256": "73a51fad270ac193ff7eda6bf7de2cfbd0b7c5fe7880d2d109266da44baa1c88",
+      "adamw_backend": "fused",
+      "checkpoint": "artifacts/architecture-study/diffusion/seed-1337/checkpoints/step-000000064574"
+    },
+    {
+      "architecture": "diffusion",
+      "seed": 2027,
+      "terminal_stage": "screening",
+      "optimizer_step": 12915,
+      "tokens_consumed": 105799680,
+      "terminal_event": "run_stopped",
+      "compute_seconds": 264.329,
+      "event_wall_seconds": 482.648,
+      "training_config_sha256": "6fe8eb9876ffeb79dee2e7c7b9063cad444fe19750a5559489456041b63dac7",
+      "adamw_backend": "fused",
+      "checkpoint": "artifacts/architecture-study/diffusion/seed-2027/checkpoints/step-000000012915"
+    },
+    {
+      "architecture": "diffusion",
+      "seed": 3407,
+      "terminal_stage": "screening",
+      "optimizer_step": 12915,
+      "tokens_consumed": 105799680,
+      "terminal_event": "run_stopped",
+      "compute_seconds": 266.833,
+      "event_wall_seconds": 486.98,
+      "training_config_sha256": "745e060a55bb7ffe5dab67ae32d0b7c784bc6818c464d54c144612406a89cee5",
+      "adamw_backend": "fused",
+      "checkpoint": "artifacts/architecture-study/diffusion/seed-3407/checkpoints/step-000000012915"
+    }
+  ],
+  "interrupted_attempts": [
+    {
+      "architecture": "dense",
+      "seed": 1337,
+      "reason": "initial shell wrapper timed out at 60 seconds",
+      "artifact": "artifacts/architecture-study/dense/seed-1337-timeout-20260805",
+      "optimizer_step": 845,
+      "tokens_consumed": 6922240,
+      "excluded_from_canonical_study": true
+    }
+  ]
+}

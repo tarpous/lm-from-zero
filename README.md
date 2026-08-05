@@ -533,7 +533,7 @@ implementation candidates, not objective changes. Muon,
 alternative diffusion-time sampling, Token-Superposition, curriculum, native
 FP8, and fused third-party Mamba kernels remain separately gated experiments.
 
-## Architecture study planning
+## Architecture study planning and results
 
 Milestone 7 begins with a CPU-only plan that freezes all three architectures,
 the seeds `1337`, `2027`, and `3407`, shared data bindings, exact FLOP budgets,
@@ -567,9 +567,12 @@ the study. The current plan's screening/full compute-only estimates are about
 4.26/21.30 minutes per dense lineage, 12.16/60.79 minutes per Mamba-2 lineage,
 and 4.10/20.50 minutes per diffusion lineage.
 
-The calibration and screening/full runs require explicit GPU approval. They
-must use the plan's seed-specific artifact paths and `--stop-after-optimizer-step`
-without changing the full scheduler configuration.
+The nine-lineage GPU study is complete. The tracked result report is
+[`reports/zero-20m-architecture-study.json`](reports/zero-20m-architecture-study.json);
+it records terminal steps, tokens, config hashes, event-wall timings, and
+checkpoint paths. The read-only audit validated all 15 retained checkpoints.
+The ignored checkpoint and event artifacts remain under
+`artifacts/architecture-study/` for downstream evaluation and export.
 
 ## Training checkpoints
 

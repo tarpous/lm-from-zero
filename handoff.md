@@ -1,26 +1,35 @@
 # Session handoff: dense vertical-slice implementation
 
-## Current update (August 5, 2026, Milestone 7 offline preflight)
+## Current update (August 5, 2026, Milestone 7 GPU study complete)
 
-The Milestone-7 architecture-study plan has been regenerated after the 6A
-calibration using measured sustained rates and the promoted diffusion optimizer.
-The ignored plan at `artifacts/architecture-study/plan.json` uses 391,158
-dense tokens/s, 166,019 Mamba-2 tokens/s, 430,109 diffusion tokens/s, and
-`adamw_backend=fused` only for diffusion. All nine seed-specific dry runs match
-the plan's model, training-config, tokenizer, shard, scheduler, seed, telemetry,
-and stop-step bindings; no model was allocated and no GPU training started.
+The complete nine-lineage architecture study ran at clean revision
+`53d071b46d600cfc50b53ab09f0a5611e9f28f8c` using the frozen plan at
+`artifacts/architecture-study/plan.json`. Dense, Mamba-2, and diffusion each
+ran seeds 1337/2027/3407 with the full scheduler preserved from step zero;
+only seed 1337 continued from screening to the full matched budget. Diffusion
+used the promoted fused AdamW backend for every seed.
 
-The planner estimates screening/full wall time per lineage at approximately
-4.26/21.30 minutes for dense, 12.16/60.79 minutes for Mamba-2, and
-4.10/20.50 minutes for diffusion. With three screening seeds and only the
-seed-1337 continuation, serialized compute-only work is about 143.6 minutes;
-checkpoint publication, evaluation, compilation, and recovery margin are
-additional. Retention is 8.65 GB, and `/mnt/c` currently has about 144 GiB
-free, passing the documented 15 GiB preflight gate.
+All nine terminal runs reached their planned boundaries with matching model,
+training-config, tokenizer, shard, seed, and token bindings:
 
-The next boundary is explicit approval for the long nine-lineage GPU study.
-Launch seed-specific screening with the full scheduler preserved; only seed
-1337 may continue from its screening checkpoint to the full matched budget.
+- Dense: screening steps 12,208 for seeds 2027/3407; seed 1337 full step
+  61,036 and 500,006,912 tokens.
+- Mamba-2: screening steps 14,784 for seeds 2027/3407; seed 1337 full step
+  73,919 and 605,544,448 tokens.
+- Diffusion: screening steps 12,915 for seeds 2027/3407; seed 1337 full step
+  64,574 and 528,990,208 tokens.
+
+The tracked result is [`reports/zero-20m-architecture-study.json`](reports/zero-20m-architecture-study.json).
+Its read-only audit validated all 15 retained checkpoints, model/recovery
+hashes, and terminal manifests. Canonical artifacts occupy about 3.88 GB;
+the `/mnt/c` filesystem had about 140 GB free at audit. One initial 60-second
+wrapper timeout was moved to the explicitly excluded
+`dense/seed-1337-timeout-20260805` evidence directory; the canonical rerun
+completed normally.
+
+The next phase is result analysis and downstream evaluation, not more
+architecture-study training. Do not delete the ignored checkpoints before
+export/evaluation and publication decisions are recorded.
 
 ## Current update (August 5, 2026, Milestone 6A calibration complete)
 
