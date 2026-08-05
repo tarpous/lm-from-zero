@@ -21,7 +21,10 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - name: Synchronize locked environment
-        run: uv sync --frozen --all-groups
+        # Keep the CPU quality job independent of the optional GPU-only
+        # mamba-oracle group. That group builds mamba-ssm from source and
+        # requires nvcc; the oracle has its own explicitly approved workflow.
+        run: uv sync --frozen --group dev
       - name: Check formatting
         run: uv run --frozen ruff format --check .
       - name: Lint
