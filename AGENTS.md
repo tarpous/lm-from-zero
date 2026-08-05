@@ -68,12 +68,23 @@ commands, the dense-model configuration summary, and the focused checkpoint,
 runner, evaluation, Hugging Face export, and native generation test commands.
 The pretraining command prints a dry-run plan unless `--execute` is explicitly
 supplied.
+Milestone 6A calibration begins with the CPU-only
+`plan-acceleration-calibration` command from a clean committed revision. Its
+instrumented per-cell CUDA executor and all measurement artifacts remain
+approval-gated; run baselines before candidates and never hand-author
+calibration results. Run the focused contract tests with `PYTHONPATH=src uv run
+--frozen pytest tests/test_acceleration_calibration.py
+tests/test_acceleration_execution.py tests/test_acceleration_runtime.py
+tests/test_acceleration_statistics.py --no-cov`.
 Checkpoint evaluation must use fixed non-wrapping shard windows. Checkpoints
 use canonical manifests, separate Safetensors model weights, and
 restricted-load recovery state under ignored `artifacts/`. Do not copy measured
 values manually into reports. Training JSONL is the durable metric source;
 TensorBoard and atomic Parquet outputs are rank-zero mirrors that must remain
-rebuildable from canonical JSONL.
+rebuildable from canonical JSONL. The buffered JSONL sink must durably sync
+before every checkpoint and on snapshot, abort, or clean shutdown. Long-run
+checkpoint cadence is time-only by default; use explicit step cadence only for
+bounded tests that require it.
 
 Dependency-free fallback verification:
 

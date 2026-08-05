@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 from typer.testing import CliRunner
@@ -55,6 +56,14 @@ class _FakeWriter:
 
 
 class TrainingMetricsTests(unittest.TestCase):
+    def test_one_shot_append_remains_immediately_durable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            jsonl = Path(directory) / "events.jsonl"
+            with patch("lm_from_zero.training.metrics.os.fsync") as fsync:
+                append_training_event(jsonl, {"event": "run_start"})
+
+            fsync.assert_called_once()
+
     def test_jsonl_is_canonical_and_parquet_keeps_latest_step(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -205,6 +214,73 @@ class TrainingMetricsTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, result.output)
             self.assertEqual(json.loads(result.stdout)["optimizer_steps"], 1)
             self.assertTrue(output.is_file())
+
+    def test_sinks_sync_on_optimizer_step_and_time_schedules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current_time = [0.0]
+            sinks = TrainingMetricSinks(
+                jsonl_path=root / "events.jsonl",
+                tensorboard_directory=None,
+                parquet_path=None,
+                resume_optimizer_step=0,
+                durable_every_steps=2,
+                durable_every_seconds=5.0,
+                clock=lambda: current_time[0],
+            )
+            with patch("lm_from_zero.training.metrics.os.fsync") as fsync:
+                sinks.append_event({"event": "run_start"})
+                sinks.log_optimizer_step(_step_payload(1))
+                fsync.assert_not_called()
+
+                sinks.log_optimizer_step(_step_payload(2))
+                self.assertEqual(fsync.call_count, 1)
+
+                current_time[0] = 5.0
+                sinks.append_event({"event": "validation"})
+                self.assertEqual(fsync.call_count, 2)
+
+                sinks.close()
+                self.assertEqual(fsync.call_count, 3)
+
+    def test_sinks_measure_cumulative_metric_fsync_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            duration_times = iter((10.0, 10.25, 20.0, 20.75))
+            sinks = TrainingMetricSinks(
+                jsonl_path=root / "events.jsonl",
+                tensorboard_directory=None,
+                parquet_path=None,
+                resume_optimizer_step=0,
+                duration_clock=lambda: next(duration_times),
+            )
+
+            self.assertEqual(sinks.metric_fsync_seconds, 0.0)
+            sinks.durable_sync()
+            self.assertEqual(sinks.metric_fsync_seconds, 0.25)
+            sinks.close()
+            self.assertEqual(sinks.metric_fsync_seconds, 1.0)
+
+    def test_explicit_snapshot_and_abort_force_durable_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sinks = TrainingMetricSinks(
+                jsonl_path=root / "events.jsonl",
+                tensorboard_directory=None,
+                parquet_path=None,
+                resume_optimizer_step=0,
+                durable_every_steps=50,
+                durable_every_seconds=60.0,
+            )
+            with patch("lm_from_zero.training.metrics.os.fsync") as fsync:
+                sinks.log_optimizer_step(_step_payload(1))
+                sinks.durable_sync()
+                self.assertEqual(fsync.call_count, 1)
+                sinks.log_optimizer_step(_step_payload(2))
+                sinks.snapshot()
+                self.assertEqual(fsync.call_count, 2)
+                sinks.abort()
+                self.assertEqual(fsync.call_count, 3)
 
     def test_abort_closes_live_writer_without_materializing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1,5 +1,93 @@
 # Session handoff: dense vertical-slice implementation
 
+## Current update (August 5, 2026, Milestone 6A implementation gate)
+
+The previous architecture-study planner revision is pushed: local `HEAD` and
+`origin/main` both began this phase at `976e80479347f5c16744caf98fb5773b4068a97b`.
+Milestone 6A's executor is now implemented locally through the CPU/offline
+gate, but the milestone is not yet complete because no synchronized RTX 4080
+SUPER calibration results have been generated.
+
+The training configuration is version 2 and hashes explicit compile mode,
+AdamW backend, full-logit versus PyTorch linear cross-entropy loss, SDPA
+backend, float32 matmul precision, telemetry interval, metric durability, and
+checkpoint cadence. The runner removes unconditional per-step CUDA
+synchronization, samples scalar/peak-memory telemetry by window, uses time-only
+15-minute recovery checkpoints by default, durably flushes buffered canonical
+JSONL before every checkpoint and shutdown, and preserves step cadence for
+bounded smoke tests. Dense and diffusion can force native Flash SDPA;
+diffusion has an explicit padding-free attention path. Mamba-2 can test TF32.
+Linear loss-only forwards preserve the checkpoint/export parameter layout and
+have CPU loss/gradient parity tests for all three implemented architectures.
+
+`src/lm_from_zero/acceleration_calibration.py` defines a deterministic 26-cell
+matrix for dense, Mamba-2, and diffusion: compiled-default current baseline,
+sampled telemetry, compile-disabled plus three alternative compile modes,
+fused AdamW, and architecture-appropriate Flash SDPA, TF32, and linear
+cross-entropy candidates. The version-2 plan fixes the clean Git revision,
+expected GPU name, seed, shard/model hashes, shape, warmup, measurement window,
+three repetitions, loss/gradient/update parity tolerances, and a 10% median
+end-to-end promotion threshold. Plan generation now refuses a dirty worktree.
+Use after committing this implementation:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  plan-acceleration-calibration \
+  artifacts/shards/tinystories-16k/build.json \
+  --output artifacts/acceleration-calibration/plan.json
+```
+
+Planning, inspection, and the default `run-acceleration-calibration-cell` dry
+run are CPU-only and do not allocate a model. The `--execute` path is now real
+and guarded: it verifies the clean planned revision, exact plan/shard/tokenizer,
+unused repetition directory, expected bf16 CUDA device, and same-repetition
+baseline evidence before candidate allocation. It writes generated numerical
+traces and result hashes, uses CUDA events with one resolution boundary,
+profiles SDPA outside the measured window, measures graph breaks, CPU/data,
+evaluation, checkpoint, JSONL fsync and peak VRAM, and records decay/no-decay
+weight, gradient, update, angular-LR and effective-LR statistics. Baseline
+parity uses the first three synchronized warm-up losses/gradient norms plus
+warm-up update RMS; candidates bind the matching baseline result hash.
+
+The next action is to commit/push this implementation, regenerate the
+clean-revision plan, inspect an exact cell dry run, and request explicit
+approval before any `--execute` call. Run baseline repetitions before their
+candidates. Do not hand-author result/report values, do not promote a candidate
+without complete parity evidence and at least 10% median end-to-end gain, and
+do not start the nine Milestone-7 screening lineages.
+
+The complete offline gate passes all 223 tests with 85.05% branch coverage;
+the approval-gated CUDA execution body is explicitly outside the CPU-only
+coverage denominator, while its guards, dispatch, schemas, event timer,
+profiler classifier and statistic reducers are covered. Ruff formatting/lint
+and strict mypy pass across all 74 source/test files. No dependency was
+installed, no dataset/model was downloaded, and no GPU training was executed
+in this implementation phase.
+
+## Current update (August 4, 2026, acceleration-plan refresh)
+
+The external implementation plan at
+`../plans/01-lm-from-zero.md` now contains a
+primary-source-verified training-acceleration program refreshed through August
+4, including Qwen3.5/3.6/3.7, MiniMax M3, GLM-5.2, Nemotron 3 Ultra and
+Nemotron-Labs-Diffusion, Thinking Machines Inkling, PrismML Bonsai, and Kimi
+K3. It distinguishes real training gains from inference-only, long-context,
+cluster-only, and non-reproducible claims.
+
+Before the long Milestone-7 architecture runs, implement and verify Milestone
+6A from that plan: remove hot-path host/CUDA synchronization, rationalize
+checkpoint/evaluation durability, benchmark compile modes/fused AdamW/SDPA/
+linear cross-entropy/microbatch choices, preserve compiler caches, and produce
+synchronized end-to-end calibration records for dense, Mamba-2, and diffusion.
+The original AdamW objectives remain the canonical architecture comparison;
+objective/data/optimizer changes such as bell-shaped diffusion time sampling,
+Muon/Hyperball, Token-Superposition, curriculum/data selection, and native FP8
+must pass their separately bounded research gates before promotion.
+
+No dependency was installed, no dataset or model was downloaded, and no long
+GPU job was started during this research/plan update. That research led to the
+current Milestone 6A implementation phase above.
+
 ## Current update (August 4, 2026, Milestone 7 planning)
 
 Milestone 6 was committed and pushed as

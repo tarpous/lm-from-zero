@@ -248,17 +248,17 @@ class _ValidatedCheckpoint:
 
 @dataclass(slots=True)
 class CheckpointCadence:
-    """Represent step and wall-clock triggers without duplicate-step saves."""
+    """Represent optional step and wall-clock triggers without duplicate saves."""
 
     last_saved_time_seconds: float
-    step_interval: int = 250
+    step_interval: int | None = None
     time_interval_seconds: float = 15 * 60
     last_saved_step: int | None = None
 
     def __post_init__(self) -> None:
         if self.last_saved_time_seconds < 0:
             raise ValueError("last saved time cannot be negative")
-        if self.step_interval <= 0:
+        if self.step_interval is not None and self.step_interval <= 0:
             raise ValueError("step interval must be positive")
         if self.time_interval_seconds <= 0:
             raise ValueError("time interval must be positive")
@@ -277,7 +277,11 @@ class CheckpointCadence:
         if optimizer_step == self.last_saved_step:
             return frozenset()
         reasons: set[Literal["step", "time"]] = set()
-        if optimizer_step > 0 and optimizer_step % self.step_interval == 0:
+        if (
+            self.step_interval is not None
+            and optimizer_step > 0
+            and optimizer_step % self.step_interval == 0
+        ):
             reasons.add("step")
         if now_seconds - self.last_saved_time_seconds >= self.time_interval_seconds:
             reasons.add("time")

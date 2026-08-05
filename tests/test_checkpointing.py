@@ -470,7 +470,10 @@ class CheckpointPolicyTests(unittest.TestCase):
             self.assertFalse((root / "step-000000000002").exists())
 
     def test_step_and_time_triggers_write_each_step_at_most_once(self) -> None:
-        cadence = CheckpointCadence(last_saved_time_seconds=0)
+        cadence = CheckpointCadence(
+            last_saved_time_seconds=0,
+            step_interval=250,
+        )
 
         self.assertEqual(cadence.due_reasons(249, 899), frozenset())
         self.assertEqual(
@@ -488,6 +491,31 @@ class CheckpointPolicyTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "backwards"):
             cadence.due_reasons(501, 1_799)
+
+    def test_default_cadence_is_time_only(self) -> None:
+        cadence = CheckpointCadence(last_saved_time_seconds=0)
+
+        self.assertEqual(cadence.due_reasons(250, 899), frozenset())
+        self.assertEqual(cadence.due_reasons(250, 900), frozenset({"time"}))
+        cadence.mark_saved(250, 900)
+        self.assertEqual(cadence.due_reasons(250, 1_800), frozenset())
+        self.assertEqual(cadence.due_reasons(500, 1_800), frozenset({"time"}))
+
+        with self.assertRaisesRegex(ValueError, "backwards"):
+            cadence.due_reasons(501, 899)
+
+    def test_step_interval_must_be_positive_when_enabled(self) -> None:
+        CheckpointCadence(last_saved_time_seconds=0, step_interval=None)
+
+        for step_interval in (0, -1):
+            with (
+                self.subTest(step_interval=step_interval),
+                self.assertRaisesRegex(ValueError, "step interval"),
+            ):
+                CheckpointCadence(
+                    last_saved_time_seconds=0,
+                    step_interval=step_interval,
+                )
 
 
 if __name__ == "__main__":

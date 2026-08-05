@@ -57,6 +57,7 @@ from lm_from_zero.training import (
     train_accumulated_step,
     validate_checkpoint,
 )
+from lm_from_zero.training.runner import CudaEventTimer
 
 REPOSITORY = Path(__file__).resolve().parents[1]
 
@@ -323,6 +324,105 @@ def _ddp_runner_worker(
 
 
 class DenseRunnerTests(unittest.TestCase):
+    def test_cuda_event_timer_defers_synchronization_until_resolution(self) -> None:
+        events: list[Mock] = []
+
+        def create_event() -> Mock:
+            event = Mock()
+            event.elapsed_time.return_value = float(len(events) + 1)
+            events.append(event)
+            return event
+
+        timer = CudaEventTimer(event_factory=create_event)
+        timer.begin_step()
+        timer.begin_optimizer_step()
+        timer.end_step()
+        timer.begin_step()
+        timer.begin_optimizer_step()
+        timer.end_step()
+
+        self.assertEqual(timer.pending_optimizer_steps, 2)
+        for event in events:
+            event.synchronize.assert_not_called()
+        measurement = timer.resolve(reset=True)
+
+        self.assertEqual(measurement.optimizer_steps, 2)
+        self.assertEqual(measurement.compute_milliseconds, 6.0)
+        self.assertEqual(measurement.optimizer_milliseconds, 10.0)
+        events[-1].synchronize.assert_called_once_with()
+        for event in events[:-1]:
+            event.synchronize.assert_not_called()
+        self.assertEqual(timer.pending_optimizer_steps, 0)
+
+    def test_cuda_event_timer_rejects_invalid_boundaries(self) -> None:
+        timer = CudaEventTimer(event_factory=Mock)
+
+        with self.assertRaisesRegex(RuntimeError, "no CUDA-timed"):
+            timer.begin_optimizer_step()
+        timer.begin_step()
+        with self.assertRaisesRegex(RuntimeError, "already active"):
+            timer.begin_step()
+        with self.assertRaisesRegex(RuntimeError, "cannot resolve"):
+            timer.resolve()
+
+    def test_step_emits_cuda_timing_callbacks_without_resolving(self) -> None:
+        model_config = _model_config("0" * 64)
+        config = _training_config(
+            model_config,
+            CausalBatchConfig(sequence_length=4, micro_batch_size=1),
+            accumulation_steps=1,
+        )
+        model = Olmo2ForCausalLM(model_config)
+        optimizer, _ = build_adamw(model, config.optimization)
+        timing = Mock()
+
+        train_accumulated_step(
+            model,
+            optimizer,
+            [_batch([[8, 9, 10, 11]], 0, 1)],
+            config,
+            zero_based_step=0,
+            collect_telemetry=False,
+            cuda_event_timing=timing,
+        )
+
+        self.assertEqual(
+            timing.method_calls,
+            [
+                unittest.mock.call.begin_step(),
+                unittest.mock.call.begin_optimizer_step(),
+                unittest.mock.call.end_step(),
+            ],
+        )
+
+    def test_sampled_step_skips_host_telemetry_but_updates_parameters(self) -> None:
+        model_config = _model_config("0" * 64)
+        config = _training_config(
+            model_config,
+            CausalBatchConfig(sequence_length=4, micro_batch_size=1),
+            accumulation_steps=1,
+        )
+        model = Olmo2ForCausalLM(model_config)
+        optimizer, _ = build_adamw(model, config.optimization)
+        before = [parameter.detach().clone() for parameter in model.parameters()]
+
+        metrics = train_accumulated_step(
+            model,
+            optimizer,
+            [_batch([[8, 9, 10, 11]], 0, 1)],
+            config,
+            zero_based_step=0,
+            collect_telemetry=False,
+        )
+
+        self.assertIsNone(metrics)
+        self.assertTrue(
+            any(
+                not torch.equal(first, second)
+                for first, second in zip(before, model.parameters(), strict=True)
+            )
+        )
+
     def test_gradient_accumulation_matches_one_large_batch(self) -> None:
         model_config = _model_config("0" * 64)
         large_config = _training_config(
@@ -364,6 +464,8 @@ class DenseRunnerTests(unittest.TestCase):
             zero_based_step=0,
         )
 
+        assert large_metrics is not None
+        assert accumulated_metrics is not None
         self.assertAlmostEqual(large_metrics.loss, accumulated_metrics.loss)
         self.assertEqual(large_metrics.tokens_consumed, 8)
         self.assertGreater(large_metrics.elapsed_seconds, 0)
@@ -418,6 +520,7 @@ class DenseRunnerTests(unittest.TestCase):
                 zero_based_step=0,
                 distributed=context,
             )
+        assert metrics is not None
         self.assertEqual(metrics.tokens_consumed, 8)
         self.assertEqual(
             metrics.tokens_per_second,
@@ -563,6 +666,20 @@ class DenseRunnerTests(unittest.TestCase):
                 ),
                 optimization=OptimizationConfig(total_steps=2),
                 compile_model=True,
+            )
+        with self.assertRaisesRegex(ValidationError, "compile mode"):
+            DenseTrainingConfig(
+                model=_model_config("0" * 64),
+                batch=CausalBatchConfig(sequence_length=4, micro_batch_size=1),
+                optimization=OptimizationConfig(total_steps=2),
+                compile_mode="reduce-overhead",
+            )
+        with self.assertRaisesRegex(ValidationError, "fused AdamW"):
+            DenseTrainingConfig(
+                model=_model_config("0" * 64),
+                batch=CausalBatchConfig(sequence_length=4, micro_batch_size=1),
+                optimization=OptimizationConfig(total_steps=2),
+                adamw_backend="fused",
             )
 
     def test_runner_dry_run_checkpoint_resume_and_jsonl_records(self) -> None:

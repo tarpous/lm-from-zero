@@ -214,6 +214,36 @@ class Mamba2Tests(unittest.TestCase):
             )
         )
 
+    def test_linear_cross_entropy_loss_and_gradients_match_full_logits(self) -> None:
+        model = Mamba2ForCausalLM(tiny_config(num_hidden_layers=1))
+        input_ids = torch.randint(8, model.config.vocab_size, (2, 9))
+
+        full = cast(Tensor, model(input_ids, labels=input_ids).loss)
+        torch.autograd.backward(full)
+        full_gradients = {
+            name: cast(Tensor, parameter.grad).clone()
+            for name, parameter in model.named_parameters()
+        }
+        model.zero_grad(set_to_none=True)
+        output = model(
+            input_ids,
+            labels=input_ids,
+            loss_backend="linear",
+            loss_only=True,
+        )
+        linear = cast(Tensor, output.loss)
+        torch.autograd.backward(linear)
+
+        self.assertEqual(output.logits.numel(), 0)
+        torch.testing.assert_close(linear, full, atol=2e-6, rtol=2e-6)
+        for name, parameter in model.named_parameters():
+            torch.testing.assert_close(
+                cast(Tensor, parameter.grad),
+                full_gradients[name],
+                atol=2e-6,
+                rtol=2e-5,
+            )
+
     def test_causal_logits_cache_and_state_shapes(self) -> None:
         config = tiny_config()
         model = Mamba2ForCausalLM(config).eval()

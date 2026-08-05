@@ -349,6 +349,14 @@ def pretrain_dense_command(
     device: Annotated[str, typer.Option()] = "cuda",
     precision: Annotated[str, typer.Option()] = "bf16",
     compile_model: Annotated[bool, typer.Option()] = True,
+    compile_mode: Annotated[str, typer.Option()] = "default",
+    adamw_backend: Annotated[str, typer.Option()] = "auto",
+    loss_backend: Annotated[str, typer.Option()] = "full",
+    sdpa_backend: Annotated[str, typer.Option()] = "auto",
+    float32_matmul_precision: Annotated[str, typer.Option()] = "highest",
+    telemetry_every_steps: Annotated[int, typer.Option(min=1)] = 50,
+    checkpoint_every_steps: Annotated[int | None, typer.Option(min=1)] = None,
+    checkpoint_every_seconds: Annotated[float, typer.Option(min=1e-6)] = 900.0,
     estimated_tokens_per_second: Annotated[
         float | None, typer.Option(min=1e-12)
     ] = None,
@@ -414,6 +422,14 @@ def pretrain_dense_command(
                 "device": device,
                 "precision": precision,
                 "compile_model": compile_model,
+                "compile_mode": compile_mode,
+                "adamw_backend": adamw_backend,
+                "loss_backend": loss_backend,
+                "sdpa_backend": sdpa_backend,
+                "float32_matmul_precision": float32_matmul_precision,
+                "telemetry_every_steps": telemetry_every_steps,
+                "checkpoint_every_steps": checkpoint_every_steps,
+                "checkpoint_every_seconds": checkpoint_every_seconds,
                 "seed": seed,
             }
         )
@@ -506,6 +522,13 @@ def pretrain_mamba2_command(
     device: Annotated[str, typer.Option()] = "cuda",
     precision: Annotated[str, typer.Option()] = "bf16",
     compile_model: Annotated[bool, typer.Option()] = True,
+    compile_mode: Annotated[str, typer.Option()] = "default",
+    adamw_backend: Annotated[str, typer.Option()] = "auto",
+    loss_backend: Annotated[str, typer.Option()] = "full",
+    float32_matmul_precision: Annotated[str, typer.Option()] = "highest",
+    telemetry_every_steps: Annotated[int, typer.Option(min=1)] = 50,
+    checkpoint_every_steps: Annotated[int | None, typer.Option(min=1)] = None,
+    checkpoint_every_seconds: Annotated[float, typer.Option(min=1e-6)] = 900.0,
     estimated_tokens_per_second: Annotated[
         float | None, typer.Option(min=1e-12)
     ] = None,
@@ -589,6 +612,13 @@ def pretrain_mamba2_command(
                 "device": device,
                 "precision": precision,
                 "compile_model": compile_model,
+                "compile_mode": compile_mode,
+                "adamw_backend": adamw_backend,
+                "loss_backend": loss_backend,
+                "float32_matmul_precision": float32_matmul_precision,
+                "telemetry_every_steps": telemetry_every_steps,
+                "checkpoint_every_steps": checkpoint_every_steps,
+                "checkpoint_every_seconds": checkpoint_every_seconds,
                 "seed": seed,
             }
         )
@@ -629,6 +659,151 @@ def pretrain_mamba2_command(
             typer.echo(result.model_dump_json())
 
 
+@app.command("plan-acceleration-calibration")
+def plan_acceleration_calibration_command(
+    build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output: Annotated[Path | None, typer.Option()] = None,
+    artifact_root: Annotated[Path, typer.Option()] = Path(
+        "artifacts/acceleration-calibration/results"
+    ),
+    micro_batch_size: Annotated[int, typer.Option(min=1)] = 8,
+    gradient_accumulation_steps: Annotated[int, typer.Option(min=1)] = 1,
+    warmup_optimizer_steps: Annotated[int, typer.Option(min=3)] = 50,
+    measured_optimizer_steps: Annotated[int, typer.Option(min=1)] = 100,
+    minimum_measured_seconds: Annotated[float, typer.Option(min=1e-6)] = 60.0,
+    repetitions: Annotated[int, typer.Option(min=1)] = 3,
+    telemetry_interval_steps: Annotated[int, typer.Option(min=2)] = 50,
+    expected_cuda_device_name: Annotated[str, typer.Option()] = (
+        "NVIDIA GeForce RTX 4080 SUPER"
+    ),
+) -> None:
+    """Freeze the synchronized Milestone 6A matrix without allocating a model."""
+
+    from lm_from_zero.acceleration_calibration import (
+        AccelerationCalibrationError,
+        create_plan,
+        write_plan,
+    )
+    from lm_from_zero.acceleration_execution import inspect_repository_state
+
+    repository_state = inspect_repository_state(Path.cwd())
+    if repository_state.dirty:
+        raise AccelerationCalibrationError(
+            "calibration plans require a clean Git worktree"
+        )
+
+    plan = create_plan(
+        build_manifest,
+        repository_revision=repository_state.revision,
+        artifact_root=artifact_root,
+        micro_batch_size=micro_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        warmup_optimizer_steps=warmup_optimizer_steps,
+        measured_optimizer_steps=measured_optimizer_steps,
+        minimum_measured_seconds=minimum_measured_seconds,
+        repetitions=repetitions,
+        telemetry_interval_steps=telemetry_interval_steps,
+        expected_cuda_device_name=expected_cuda_device_name,
+    )
+    if output is not None:
+        write_plan(output, plan)
+    typer.echo(plan.canonical_json())
+
+
+@app.command("inspect-acceleration-calibration-cell")
+def inspect_acceleration_calibration_cell_command(
+    plan_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    architecture: Annotated[str, typer.Argument()],
+    cell_id: Annotated[str, typer.Argument()],
+) -> None:
+    """Resolve one calibration cell; this command never executes GPU work."""
+
+    from lm_from_zero.acceleration_calibration import (
+        ARCHITECTURES,
+        AccelerationCalibrationError,
+        load_plan,
+        resolve_cell,
+    )
+
+    if architecture not in ARCHITECTURES:
+        raise AccelerationCalibrationError("unknown calibration architecture")
+    plan = load_plan(plan_path)
+    cell = resolve_cell(plan, architecture, cell_id)
+    typer.echo(cell.canonical_json())
+
+
+@app.command("build-acceleration-calibration-report")
+def build_acceleration_calibration_report_command(
+    plan_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    results_directory: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option()],
+) -> None:
+    """Validate complete calibration evidence and publish its derived report."""
+
+    from lm_from_zero.acceleration_calibration import (
+        build_report,
+        load_plan,
+        load_results,
+        write_report,
+    )
+
+    report = build_report(load_plan(plan_path), load_results(results_directory))
+    write_report(output, report)
+    typer.echo(report.canonical_json())
+
+
+@app.command("run-acceleration-calibration-cell")
+def run_acceleration_calibration_cell_command(
+    plan_path: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    architecture: Annotated[str, typer.Argument()],
+    cell_id: Annotated[str, typer.Argument()],
+    repetition: Annotated[int, typer.Option(min=1)] = 1,
+    tokenizer_model: Annotated[Path | None, typer.Option()] = None,
+    repository: Annotated[Path, typer.Option()] = Path("."),
+    execute: Annotated[bool, typer.Option()] = False,
+) -> None:
+    """Resolve one fresh-process cell and optionally generate CUDA evidence."""
+
+    from lm_from_zero.acceleration_calibration import (
+        ARCHITECTURES,
+        AccelerationCalibrationError,
+    )
+    from lm_from_zero.acceleration_execution import (
+        AccelerationExecutionError,
+        execute_calibration_cell,
+        require_executable_calibration_cell,
+        resolve_from_plan,
+    )
+
+    if architecture not in ARCHITECTURES:
+        raise AccelerationCalibrationError("unknown calibration architecture")
+    dry_run = resolve_from_plan(
+        plan_path,
+        build_manifest,
+        architecture,
+        cell_id,
+        repetition,
+    )
+    typer.echo(dry_run.canonical_json())
+    if execute:
+        require_executable_calibration_cell(dry_run)
+        if tokenizer_model is None:
+            raise AccelerationExecutionError(
+                "--tokenizer-model is required with --execute"
+            )
+        result = execute_calibration_cell(
+            plan_path,
+            build_manifest,
+            tokenizer_model,
+            repository,
+            architecture,
+            cell_id,
+            repetition,
+        )
+        typer.echo(result.canonical_json())
+
+
 @app.command("pretrain-diffusion")
 def pretrain_diffusion_command(
     build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
@@ -646,6 +821,15 @@ def pretrain_diffusion_command(
     device: Annotated[str, typer.Option()] = "cuda",
     precision: Annotated[str, typer.Option()] = "bf16",
     compile_model: Annotated[bool, typer.Option()] = True,
+    compile_mode: Annotated[str, typer.Option()] = "default",
+    adamw_backend: Annotated[str, typer.Option()] = "auto",
+    loss_backend: Annotated[str, typer.Option()] = "full",
+    sdpa_backend: Annotated[str, typer.Option()] = "auto",
+    diffusion_padding_free_attention: Annotated[bool, typer.Option()] = False,
+    float32_matmul_precision: Annotated[str, typer.Option()] = "highest",
+    telemetry_every_steps: Annotated[int, typer.Option(min=1)] = 50,
+    checkpoint_every_steps: Annotated[int | None, typer.Option(min=1)] = None,
+    checkpoint_every_seconds: Annotated[float, typer.Option(min=1e-6)] = 900.0,
     estimated_tokens_per_second: Annotated[
         float | None, typer.Option(min=1e-12)
     ] = None,
@@ -729,6 +913,15 @@ def pretrain_diffusion_command(
                 "device": device,
                 "precision": precision,
                 "compile_model": compile_model,
+                "compile_mode": compile_mode,
+                "adamw_backend": adamw_backend,
+                "loss_backend": loss_backend,
+                "sdpa_backend": sdpa_backend,
+                "diffusion_padding_free_attention": (diffusion_padding_free_attention),
+                "float32_matmul_precision": float32_matmul_precision,
+                "telemetry_every_steps": telemetry_every_steps,
+                "checkpoint_every_steps": checkpoint_every_steps,
+                "checkpoint_every_seconds": checkpoint_every_seconds,
                 "seed": seed,
             }
         )

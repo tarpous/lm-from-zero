@@ -283,6 +283,51 @@ class MaskedDiffusionTests(unittest.TestCase):
             torch.zeros_like(model.embed_tokens.weight[config.pad_token_id]),
         )
 
+    def test_linear_cross_entropy_objective_matches_full_logits(self) -> None:
+        config = tiny_config(num_hidden_layers=1)
+        model = MaskedDiffusionForMaskedLM(config)
+        original = torch.tensor([[1, 8, 9, 2], [1, 10, 11, 2]])
+        eligible = base_pretraining_eligible_mask(
+            original, torch.ones_like(original, dtype=torch.bool)
+        )
+        batch = corrupt_for_diffusion(
+            original,
+            eligible,
+            mask_token_id=config.mask_token_id,
+            generator=torch.Generator().manual_seed(1337),
+        )
+        arguments = {
+            "labels": batch.labels,
+            "eligible_mask": batch.eligible_mask,
+            "time": batch.time,
+        }
+
+        full = cast(Tensor, model(batch.input_ids, **arguments).loss)
+        torch.autograd.backward(full)
+        full_gradients = {
+            name: cast(Tensor, parameter.grad).clone()
+            for name, parameter in model.named_parameters()
+        }
+        model.zero_grad(set_to_none=True)
+        output = model(
+            batch.input_ids,
+            **arguments,
+            loss_backend="linear",
+            loss_only=True,
+        )
+        linear = cast(Tensor, output.loss)
+        torch.autograd.backward(linear)
+
+        self.assertEqual(output.logits.numel(), 0)
+        torch.testing.assert_close(linear, full, atol=2e-6, rtol=2e-6)
+        for name, parameter in model.named_parameters():
+            torch.testing.assert_close(
+                cast(Tensor, parameter.grad),
+                full_gradients[name],
+                atol=2e-6,
+                rtol=2e-5,
+            )
+
     def test_invalid_inputs_and_partial_objective_are_rejected(self) -> None:
         model = MaskedDiffusionForMaskedLM(tiny_config())
         with self.assertRaisesRegex(ValueError, "torch.long"):

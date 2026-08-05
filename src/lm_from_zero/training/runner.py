@@ -6,8 +6,9 @@ import json
 import math
 import random
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import nullcontext
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, Self, cast
@@ -16,6 +17,7 @@ import numpy as np
 import torch
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor, nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.parallel import DistributedDataParallel
 
 from lm_from_zero.models import (
@@ -47,6 +49,7 @@ from lm_from_zero.training.data import (
 from lm_from_zero.training.distributed import DistributedContext, DistributedError
 from lm_from_zero.training.metrics import TrainingMetricSinks
 from lm_from_zero.training.optimization import (
+    AdamWBackend,
     OptimizationConfig,
     build_adamw,
     clip_gradients,
@@ -55,6 +58,15 @@ from lm_from_zero.training.optimization import (
 
 Precision = Literal["fp32", "bf16"]
 DeviceKind = Literal["cpu", "cuda"]
+CompileMode = Literal[
+    "default",
+    "reduce-overhead",
+    "max-autotune",
+    "max-autotune-no-cudagraphs",
+]
+LossBackend = Literal["full", "linear"]
+SDPABackend = Literal["auto", "flash", "efficient", "math"]
+MatmulPrecision = Literal["highest", "high"]
 
 
 class TrainingRunError(RuntimeError):
@@ -67,17 +79,25 @@ class DenseTrainingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     format: Literal["lm-from-zero-dense-training"] = "lm-from-zero-dense-training"
-    format_version: Literal[1] = 1
+    format_version: Literal[2] = 2
     model: Olmo2Config
     batch: CausalBatchConfig
     optimization: OptimizationConfig
     gradient_accumulation_steps: Annotated[int, Field(gt=0)] = 1
-    checkpoint_every_steps: Annotated[int, Field(gt=0)] = 250
+    checkpoint_every_steps: Annotated[int, Field(gt=0)] | None = None
     checkpoint_every_seconds: Annotated[float, Field(gt=0)] = 15 * 60
     keep_latest_checkpoints: Annotated[int, Field(gt=0)] = 3
     device: DeviceKind = "cpu"
     precision: Precision = "fp32"
     compile_model: bool = False
+    compile_mode: CompileMode = "default"
+    adamw_backend: AdamWBackend = "auto"
+    loss_backend: LossBackend = "full"
+    sdpa_backend: SDPABackend = "auto"
+    float32_matmul_precision: MatmulPrecision = "highest"
+    telemetry_every_steps: Annotated[int, Field(gt=0)] = 1
+    metrics_durable_every_steps: Annotated[int, Field(gt=0)] = 50
+    metrics_durable_every_seconds: Annotated[float, Field(gt=0)] = 5.0
     seed: int = 1_337
 
     @model_validator(mode="after")
@@ -86,6 +106,10 @@ class DenseTrainingConfig(BaseModel):
             raise ValueError("batch sequence length exceeds the model context")
         if self.device == "cpu" and self.compile_model:
             raise ValueError("CPU compilation is outside the default runner contract")
+        if not self.compile_model and self.compile_mode != "default":
+            raise ValueError("compile mode requires model compilation")
+        if self.device == "cpu" and self.adamw_backend == "fused":
+            raise ValueError("fused AdamW requires CUDA")
         return self
 
     @property
@@ -136,17 +160,25 @@ class Mamba2TrainingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     format: Literal["lm-from-zero-mamba2-training"] = "lm-from-zero-mamba2-training"
-    format_version: Literal[1] = 1
+    format_version: Literal[2] = 2
     model: Mamba2Config
     batch: CausalBatchConfig
     optimization: OptimizationConfig
     gradient_accumulation_steps: Annotated[int, Field(gt=0)] = 1
-    checkpoint_every_steps: Annotated[int, Field(gt=0)] = 250
+    checkpoint_every_steps: Annotated[int, Field(gt=0)] | None = None
     checkpoint_every_seconds: Annotated[float, Field(gt=0)] = 15 * 60
     keep_latest_checkpoints: Annotated[int, Field(gt=0)] = 3
     device: DeviceKind = "cpu"
     precision: Precision = "fp32"
     compile_model: bool = False
+    compile_mode: CompileMode = "default"
+    adamw_backend: AdamWBackend = "auto"
+    loss_backend: LossBackend = "full"
+    sdpa_backend: Literal["auto"] = "auto"
+    float32_matmul_precision: MatmulPrecision = "highest"
+    telemetry_every_steps: Annotated[int, Field(gt=0)] = 1
+    metrics_durable_every_steps: Annotated[int, Field(gt=0)] = 50
+    metrics_durable_every_seconds: Annotated[float, Field(gt=0)] = 5.0
     seed: int = 1_337
 
     @model_validator(mode="after")
@@ -155,6 +187,10 @@ class Mamba2TrainingConfig(BaseModel):
             raise ValueError("batch sequence length exceeds the model context")
         if self.device == "cpu" and self.compile_model:
             raise ValueError("CPU compilation is outside the default runner contract")
+        if not self.compile_model and self.compile_mode != "default":
+            raise ValueError("compile mode requires model compilation")
+        if self.device == "cpu" and self.adamw_backend == "fused":
+            raise ValueError("fused AdamW requires CUDA")
         return self
 
     @property
@@ -207,17 +243,26 @@ class DiffusionTrainingConfig(BaseModel):
     format: Literal["lm-from-zero-diffusion-training"] = (
         "lm-from-zero-diffusion-training"
     )
-    format_version: Literal[1] = 1
+    format_version: Literal[2] = 2
     model: MaskedDiffusionConfig
     batch: CausalBatchConfig
     optimization: OptimizationConfig
     gradient_accumulation_steps: Annotated[int, Field(gt=0)] = 1
-    checkpoint_every_steps: Annotated[int, Field(gt=0)] = 250
+    checkpoint_every_steps: Annotated[int, Field(gt=0)] | None = None
     checkpoint_every_seconds: Annotated[float, Field(gt=0)] = 15 * 60
     keep_latest_checkpoints: Annotated[int, Field(gt=0)] = 3
     device: DeviceKind = "cpu"
     precision: Precision = "fp32"
     compile_model: bool = False
+    compile_mode: CompileMode = "default"
+    adamw_backend: AdamWBackend = "auto"
+    loss_backend: LossBackend = "full"
+    sdpa_backend: SDPABackend = "auto"
+    diffusion_padding_free_attention: bool = False
+    float32_matmul_precision: MatmulPrecision = "highest"
+    telemetry_every_steps: Annotated[int, Field(gt=0)] = 1
+    metrics_durable_every_steps: Annotated[int, Field(gt=0)] = 50
+    metrics_durable_every_seconds: Annotated[float, Field(gt=0)] = 5.0
     seed: int = 1_337
 
     @model_validator(mode="after")
@@ -226,6 +271,10 @@ class DiffusionTrainingConfig(BaseModel):
             raise ValueError("batch sequence length exceeds the model context")
         if self.device == "cpu" and self.compile_model:
             raise ValueError("CPU compilation is outside the default runner contract")
+        if not self.compile_model and self.compile_mode != "default":
+            raise ValueError("compile mode requires model compilation")
+        if self.device == "cpu" and self.adamw_backend == "fused":
+            raise ValueError("fused AdamW requires CUDA")
         return self
 
     @property
@@ -304,6 +353,14 @@ class DenseRunPlan(BaseModel):
     device: DeviceKind
     precision: Precision
     compile_model: bool
+    compile_mode: CompileMode
+    adamw_backend: AdamWBackend
+    loss_backend: LossBackend
+    sdpa_backend: SDPABackend
+    float32_matmul_precision: MatmulPrecision
+    telemetry_every_steps: Annotated[int, Field(gt=0)]
+    checkpoint_every_steps: Annotated[int, Field(gt=0)] | None
+    checkpoint_every_seconds: Annotated[float, Field(gt=0)]
 
 
 class OptimizerStepMetrics(BaseModel):
@@ -312,6 +369,7 @@ class OptimizerStepMetrics(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 
     optimizer_step: Annotated[int, Field(gt=0)]
+    measurement_optimizer_steps: Annotated[int, Field(gt=0)] = 1
     loss: Annotated[float, Field(ge=0)]
     learning_rate: Annotated[float, Field(gt=0)]
     gradient_norm: Annotated[float, Field(ge=0)]
@@ -320,6 +378,114 @@ class OptimizerStepMetrics(BaseModel):
     tokens_per_second: Annotated[float, Field(gt=0)]
     peak_cuda_memory_allocated_bytes: Annotated[int | None, Field(gt=0)] = None
     peak_cuda_memory_reserved_bytes: Annotated[int | None, Field(gt=0)] = None
+
+
+@dataclass(frozen=True, slots=True)
+class CudaEventTimingMeasurement:
+    """Resolved device time for a completed window of optimizer steps."""
+
+    optimizer_steps: int
+    compute_milliseconds: float
+    optimizer_milliseconds: float
+
+
+class CudaStepTimingRecorder(Protocol):
+    """Callbacks around one optimizer step's queued CUDA work."""
+
+    def begin_step(self) -> None:
+        """Record the beginning of forward/backward compute."""
+
+    def begin_optimizer_step(self) -> None:
+        """Record the boundary between gradient compute and the optimizer."""
+
+    def end_step(self) -> None:
+        """Record the end of optimizer work."""
+
+
+def _create_cuda_timing_event() -> Any:
+    event_type = cast(Callable[..., Any], torch.cuda.Event)
+    return event_type(enable_timing=True)
+
+
+class CudaEventTimer:
+    """Accumulate CUDA-event timings without synchronizing each step.
+
+    ``resolve`` is the explicit reporting/final boundary. It synchronizes only
+    the last recorded event, which also waits for preceding work in the same
+    stream, and then resolves every event pair in the window.
+    """
+
+    def __init__(
+        self,
+        *,
+        event_factory: Callable[[], Any] | None = None,
+    ) -> None:
+        self._event_factory: Callable[[], Any] = (
+            _create_cuda_timing_event if event_factory is None else event_factory
+        )
+        self._active: tuple[Any, Any, Any, Any] | None = None
+        self._completed: list[tuple[Any, Any, Any, Any]] = []
+
+    @property
+    def pending_optimizer_steps(self) -> int:
+        """Return the number of completed steps awaiting resolution."""
+
+        return len(self._completed)
+
+    def begin_step(self) -> None:
+        """Begin a step on the current CUDA stream."""
+
+        if self._active is not None:
+            raise RuntimeError("a CUDA-timed optimizer step is already active")
+        events = tuple(self._event_factory() for _ in range(4))
+        self._active = cast(tuple[Any, Any, Any, Any], events)
+        self._active[0].record()
+
+    def begin_optimizer_step(self) -> None:
+        """Close compute timing and begin optimizer timing."""
+
+        if self._active is None:
+            raise RuntimeError("no CUDA-timed optimizer step is active")
+        self._active[1].record()
+        self._active[2].record()
+
+    def end_step(self) -> None:
+        """Finish the active step without synchronizing the host."""
+
+        if self._active is None:
+            raise RuntimeError("no CUDA-timed optimizer step is active")
+        self._active[3].record()
+        self._completed.append(self._active)
+        self._active = None
+
+    def resolve(self, *, reset: bool = False) -> CudaEventTimingMeasurement:
+        """Synchronize once and resolve all completed event pairs."""
+
+        if self._active is not None:
+            raise RuntimeError("cannot resolve an active CUDA-timed optimizer step")
+        if not self._completed:
+            return CudaEventTimingMeasurement(
+                optimizer_steps=0,
+                compute_milliseconds=0.0,
+                optimizer_milliseconds=0.0,
+            )
+        self._completed[-1][3].synchronize()
+        compute_milliseconds = sum(
+            float(compute_start.elapsed_time(compute_end))
+            for compute_start, compute_end, _, _ in self._completed
+        )
+        optimizer_milliseconds = sum(
+            float(optimizer_start.elapsed_time(optimizer_end))
+            for _, _, optimizer_start, optimizer_end in self._completed
+        )
+        measurement = CudaEventTimingMeasurement(
+            optimizer_steps=len(self._completed),
+            compute_milliseconds=compute_milliseconds,
+            optimizer_milliseconds=optimizer_milliseconds,
+        )
+        if reset:
+            self._completed.clear()
+        return measurement
 
 
 class DenseTrainingResult(BaseModel):
@@ -404,6 +570,14 @@ def create_dense_run_plan(
         device=config.device,
         precision=config.precision,
         compile_model=config.compile_model,
+        compile_mode=config.compile_mode,
+        adamw_backend=config.adamw_backend,
+        loss_backend=config.loss_backend,
+        sdpa_backend=config.sdpa_backend,
+        float32_matmul_precision=config.float32_matmul_precision,
+        telemetry_every_steps=config.telemetry_every_steps,
+        checkpoint_every_steps=config.checkpoint_every_steps,
+        checkpoint_every_seconds=config.checkpoint_every_seconds,
     )
 
 
@@ -487,6 +661,19 @@ def _autocast_context(config: TrainingConfig) -> torch.autocast:
     )
 
 
+def _sdpa_context(backend: SDPABackend) -> Any:
+    """Select an explicit SDPA backend for calibration, or preserve auto mode."""
+
+    if backend == "auto":
+        return nullcontext()
+    resolved = {
+        "flash": SDPBackend.FLASH_ATTENTION,
+        "efficient": SDPBackend.EFFICIENT_ATTENTION,
+        "math": SDPBackend.MATH,
+    }[backend]
+    return sdpa_kernel(resolved)
+
+
 class TrainingObjective(Protocol):
     """Prepare an architecture-specific batch and return one scalar loss."""
 
@@ -499,12 +686,22 @@ class TrainingObjective(Protocol):
 class CausalTrainingObjective:
     """Shifted next-token objective for dense and Mamba-2 models."""
 
+    def __init__(self, config: DenseTrainingConfig | Mamba2TrainingConfig) -> None:
+        self.config = config
+
     def loss(
         self, model: nn.Module, batch: CausalBatch, device: torch.device
     ) -> Tensor:
         input_ids = batch.input_ids.to(device)
         labels = batch.labels.to(device)
-        loss = cast(Any, model)(input_ids, labels=labels).loss
+        with _sdpa_context(self.config.sdpa_backend):
+            loss = cast(Any, model)(
+                input_ids,
+                labels=labels,
+                loss_backend=self.config.loss_backend,
+                loss_only=self.config.loss_backend == "linear",
+                validate_inputs=False,
+            ).loss
         if not isinstance(loss, Tensor):
             raise TrainingRunError("causal model did not return a training loss")
         return loss
@@ -513,8 +710,9 @@ class CausalTrainingObjective:
 class DiffusionTrainingObjective:
     """Continuous-time masking adapter for the bidirectional denoiser."""
 
-    def __init__(self, config: MaskedDiffusionConfig) -> None:
-        self.config = config
+    def __init__(self, config: DiffusionTrainingConfig) -> None:
+        self.training_config = config
+        self.config = config.model
 
     def loss(
         self, model: nn.Module, batch: CausalBatch, device: torch.device
@@ -533,13 +731,22 @@ class DiffusionTrainingObjective:
             mask_token_id=self.config.mask_token_id,
             epsilon=self.config.corruption_epsilon,
         )
-        loss = cast(Any, model)(
-            corrupted.input_ids,
-            attention_mask=attention_mask,
-            labels=corrupted.labels,
-            eligible_mask=corrupted.eligible_mask,
-            time=corrupted.time,
-        ).loss
+        model_attention_mask = (
+            None
+            if self.training_config.diffusion_padding_free_attention
+            else attention_mask
+        )
+        with _sdpa_context(self.training_config.sdpa_backend):
+            loss = cast(Any, model)(
+                corrupted.input_ids,
+                attention_mask=model_attention_mask,
+                labels=corrupted.labels,
+                eligible_mask=corrupted.eligible_mask,
+                time=corrupted.time,
+                loss_backend=self.training_config.loss_backend,
+                loss_only=self.training_config.loss_backend == "linear",
+                validate_inputs=False,
+            ).loss
         if not isinstance(loss, Tensor):
             raise TrainingRunError("diffusion model did not return a training loss")
         return loss
@@ -549,8 +756,8 @@ def training_objective(config: TrainingConfig) -> TrainingObjective:
     """Resolve the objective adapter without branching through model internals."""
 
     if isinstance(config, DiffusionTrainingConfig):
-        return DiffusionTrainingObjective(config.model)
-    return CausalTrainingObjective()
+        return DiffusionTrainingObjective(config)
+    return CausalTrainingObjective(config)
 
 
 def train_accumulated_step(
@@ -562,7 +769,12 @@ def train_accumulated_step(
     zero_based_step: int,
     distributed: DistributedContext | None = None,
     objective: TrainingObjective | None = None,
-) -> OptimizerStepMetrics:
+    collect_telemetry: bool = True,
+    measurement_started_seconds: float | None = None,
+    measurement_optimizer_steps: int = 1,
+    reset_peak_memory: bool = True,
+    cuda_event_timing: CudaStepTimingRecorder | None = None,
+) -> OptimizerStepMetrics | None:
     """Apply one globally reduced update from equal-size local microbatches."""
 
     if len(batches) != config.gradient_accumulation_steps:
@@ -578,10 +790,17 @@ def train_accumulated_step(
     except DistributedError as error:
         raise TrainingRunError(str(error)) from error
     device = process.torch_device(config.device)
-    if config.device == "cuda":
-        torch.cuda.synchronize(device)
+    if measurement_optimizer_steps <= 0:
+        raise ValueError("measurement optimizer steps must be positive")
+    if config.device == "cuda" and reset_peak_memory:
         torch.cuda.reset_peak_memory_stats(device)
-    started = time.perf_counter()
+    started = (
+        time.perf_counter()
+        if measurement_started_seconds is None
+        else measurement_started_seconds
+    )
+    if cuda_event_timing is not None:
+        cuda_event_timing.begin_step()
     optimizer.zero_grad(set_to_none=True)
     learning_rate = set_learning_rate(
         optimizer,
@@ -601,25 +820,30 @@ def train_accumulated_step(
         with synchronization:
             with _autocast_context(config):
                 loss = resolved_objective.loss(model, batch, device)
-            if not bool(torch.isfinite(loss)):
+            if collect_telemetry and not bool(torch.isfinite(loss)):
                 raise TrainingRunError("training loss is not finite")
             torch.autograd.backward(loss / config.gradient_accumulation_steps)
         detached_losses.append(loss.detach().float())
     gradient_norm = clip_gradients(model, config.optimization.gradient_clip_norm)
-    if not bool(torch.isfinite(gradient_norm)):
+    if collect_telemetry and not bool(torch.isfinite(gradient_norm)):
         raise TrainingRunError("gradient norm is not finite")
+    if cuda_event_timing is not None:
+        cuda_event_timing.begin_optimizer_step()
     optimizer.step()
-    if config.device == "cuda":
-        torch.cuda.synchronize(device)
-    elapsed_seconds = process.reduce_float(
-        time.perf_counter() - started,
-        reduction="max",
-        device=device,
-    )
+    if cuda_event_timing is not None:
+        cuda_event_timing.end_step()
+    if not collect_telemetry:
+        return None
     mean_loss = process.reduce_tensor_mean(torch.stack(detached_losses).mean())
+    resolved_mean_loss = float(mean_loss)
     reduced_gradient_norm = process.reduce_float(
         float(gradient_norm),
         reduction="mean",
+        device=device,
+    )
+    elapsed_seconds = process.reduce_float(
+        time.perf_counter() - started,
+        reduction="max",
         device=device,
     )
     peak_allocated = (
@@ -646,12 +870,17 @@ def train_accumulated_step(
         )
     return OptimizerStepMetrics(
         optimizer_step=zero_based_step + 1,
-        loss=float(mean_loss),
+        measurement_optimizer_steps=measurement_optimizer_steps,
+        loss=resolved_mean_loss,
         learning_rate=learning_rate,
         gradient_norm=reduced_gradient_norm,
         tokens_consumed=final_cursor.tokens_consumed * process.world_size,
         elapsed_seconds=elapsed_seconds,
-        tokens_per_second=config.tokens_per_optimizer_step / elapsed_seconds,
+        tokens_per_second=(
+            config.tokens_per_optimizer_step
+            * measurement_optimizer_steps
+            / elapsed_seconds
+        ),
         peak_cuda_memory_allocated_bytes=peak_allocated,
         peak_cuda_memory_reserved_bytes=peak_reserved,
     )
@@ -734,10 +963,18 @@ class CausalTrainer:
             raise TrainingRunError(
                 "CUDA training was requested but CUDA is unavailable"
             )
+        torch.set_float32_matmul_precision(config.float32_matmul_precision)
         device = self.distributed.torch_device(config.device)
         self.model = model.to(device)
         compiled_model: nn.Module = (
-            cast(nn.Module, torch.compile(self.model))
+            cast(
+                nn.Module,
+                torch.compile(
+                    self.model,
+                    mode=config.compile_mode,
+                    dynamic=False,
+                ),
+            )
             if config.compile_model
             else self.model
         )
@@ -763,7 +1000,12 @@ class CausalTrainer:
             None if tensorboard_directory is None else Path(tensorboard_directory)
         )
         self.parquet_log = None if parquet_log is None else Path(parquet_log)
-        self.optimizer, _ = build_adamw(self.model, config.optimization)
+        self.optimizer, _ = build_adamw(
+            self.model,
+            config.optimization,
+            backend=config.adamw_backend,
+            device_type=config.device,
+        )
         self.binding: CheckpointBinding = create_checkpoint_binding(
             architecture=config.model.architecture,
             resolved_model_config=config.model.model_dump(mode="json"),
@@ -946,6 +1188,8 @@ class CausalTrainer:
                 tensorboard_directory=self.tensorboard_directory,
                 parquet_path=self.parquet_log,
                 resume_optimizer_step=optimizer_step,
+                durable_every_steps=self.config.metrics_durable_every_steps,
+                durable_every_seconds=self.config.metrics_durable_every_seconds,
             )
             if self.distributed.is_primary
             else None
@@ -963,6 +1207,24 @@ class CausalTrainer:
             if sinks is not None:
                 sinks.abort()
             raise
+
+    def _durable_metrics_before_checkpoint(
+        self, sinks: TrainingMetricSinks | None
+    ) -> None:
+        """Make rank-zero metrics durable before any collective checkpoint work."""
+
+        failure: str | None = None
+        if sinks is not None:
+            try:
+                sinks.durable_sync()
+            except Exception as error:
+                failure = f"{type(error).__name__}: {error}"
+        failure = cast(
+            str | None,
+            self.distributed.broadcast_primary_object(failure),
+        )
+        if failure is not None:
+            raise TrainingRunError(f"metric durability failed: {failure}")
 
     def _run_loop(
         self,
@@ -992,8 +1254,26 @@ class CausalTrainer:
             last_saved_step=optimizer_step if parent is not None else None,
         )
         metrics: list[OptimizerStepMetrics] = []
+        measurement_started = time.perf_counter()
+        measurement_steps = 0
         self.forward_model.train()
         while optimizer_step < target_step:
+            next_step = optimizer_step + 1
+            primary_due_before = (
+                bool(cadence.due_reasons(next_step, time.monotonic()))
+                if self.distributed.is_primary
+                else None
+            )
+            checkpoint_due_before = cast(
+                bool,
+                self.distributed.broadcast_primary_object(primary_due_before),
+            )
+            measurement_steps += 1
+            collect_telemetry = (
+                next_step % self.config.telemetry_every_steps == 0
+                or next_step == target_step
+                or checkpoint_due_before
+            )
             batches: list[CausalBatch] = []
             for _ in range(self.config.gradient_accumulation_steps):
                 batch = self.source.next_batch(cursor)
@@ -1007,11 +1287,18 @@ class CausalTrainer:
                 zero_based_step=optimizer_step,
                 distributed=self.distributed,
                 objective=self.objective,
+                collect_telemetry=collect_telemetry,
+                measurement_started_seconds=measurement_started,
+                measurement_optimizer_steps=measurement_steps,
+                reset_peak_memory=measurement_steps == 1,
             )
             optimizer_step += 1
-            metrics.append(step_metrics)
-            if sinks is not None:
-                sinks.log_optimizer_step(step_metrics.model_dump(mode="json"))
+            if step_metrics is not None:
+                metrics.append(step_metrics)
+                if sinks is not None:
+                    sinks.log_optimizer_step(step_metrics.model_dump(mode="json"))
+                measurement_started = time.perf_counter()
+                measurement_steps = 0
             now = time.monotonic()
             primary_reasons = (
                 sorted(cadence.due_reasons(optimizer_step, now))
@@ -1022,7 +1309,8 @@ class CausalTrainer:
                 list[str],
                 self.distributed.broadcast_primary_object(primary_reasons),
             )
-            if reasons:
+            if reasons and step_metrics is not None:
+                self._durable_metrics_before_checkpoint(sinks)
                 parent = self._save(
                     optimizer_step=optimizer_step,
                     cursor=cursor,
@@ -1040,11 +1328,14 @@ class CausalTrainer:
                     )
                     sinks.snapshot()
 
-        parent = self._save(
-            optimizer_step=optimizer_step,
-            cursor=cursor,
-            parent=parent,
-        )
+        self._durable_metrics_before_checkpoint(sinks)
+        if cadence.last_saved_step != optimizer_step:
+            parent = self._save(
+                optimizer_step=optimizer_step,
+                cursor=cursor,
+                parent=parent,
+            )
+        assert parent is not None
         if sinks is not None:
             sinks.append_event(
                 {

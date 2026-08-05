@@ -278,13 +278,42 @@ def _causal_loss(logits: Tensor, labels: Tensor) -> Tensor:
         raise ValueError("labels must use torch.long token IDs")
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = labels[:, 1:].contiguous()
-    if shift_labels.numel() == 0 or not torch.any(shift_labels != -100):
+    if shift_labels.numel() == 0:
         return shift_logits.sum() * 0.0
-    return F.cross_entropy(
+    losses = F.cross_entropy(
         shift_logits.view(-1, shift_logits.shape[-1]).float(),
         shift_labels.view(-1),
         ignore_index=-100,
+        reduction="none",
     )
+    valid = shift_labels.view(-1) != -100
+    return (losses * valid).sum() / valid.sum().clamp_min(1)
+
+
+def _linear_causal_loss(
+    hidden_states: Tensor,
+    linear_weight: Tensor,
+    labels: Tensor,
+) -> Tensor:
+    """Compute shifted causal CE without materializing vocabulary logits."""
+
+    if hidden_states.shape[:2] != labels.shape:
+        raise ValueError("labels must match input batch and sequence dimensions")
+    if labels.dtype != torch.long:
+        raise ValueError("labels must use torch.long token IDs")
+    shifted_hidden = hidden_states[:, :-1].contiguous()
+    shifted_labels = labels[:, 1:].contiguous()
+    if shifted_labels.numel() == 0:
+        return shifted_hidden.sum() * 0.0
+    losses = F.linear_cross_entropy(
+        shifted_hidden.view(-1, shifted_hidden.shape[-1]),
+        linear_weight,
+        shifted_labels.view(-1),
+        reduction="none",
+        ignore_index=-100,
+    )
+    valid = shifted_labels.view(-1) != -100
+    return (losses * valid).sum() / valid.sum().clamp_min(1)
 
 
 class Olmo2ForCausalLM(nn.Module):
@@ -367,10 +396,32 @@ class Olmo2ForCausalLM(nn.Module):
         position_ids: Tensor | None = None,
         cache: DenseKVCache | None = None,
         use_cache: bool = False,
+        loss_backend: str = "full",
+        loss_only: bool = False,
+        validate_inputs: bool = True,
     ) -> CausalLMOutput:
         """Run causal logits, optional shifted loss, and optional KV caching."""
 
-        past_length, positions = self._validate_inputs(input_ids, position_ids, cache)
+        if loss_backend not in {"full", "linear"}:
+            raise ValueError("unsupported causal loss backend")
+        if loss_only and (labels is None or loss_backend != "linear"):
+            raise ValueError("loss-only forward requires labels and linear loss")
+        if validate_inputs:
+            past_length, positions = self._validate_inputs(
+                input_ids, position_ids, cache
+            )
+        else:
+            past_length = 0 if cache is None else cache_sequence_length(cache)
+            positions = (
+                torch.arange(
+                    past_length,
+                    past_length + input_ids.shape[1],
+                    device=input_ids.device,
+                    dtype=torch.long,
+                ).expand(input_ids.shape[0], -1)
+                if position_ids is None
+                else position_ids
+            )
         total_length = past_length + input_ids.shape[1]
         if attention_mask is not None and attention_mask.shape != (
             input_ids.shape[0],
@@ -396,8 +447,14 @@ class Olmo2ForCausalLM(nn.Module):
             if layer_cache is not None:
                 new_cache.append(layer_cache)
         hidden_states = self.norm(hidden_states)
-        logits = self.lm_head(hidden_states)
-        loss = None if labels is None else _causal_loss(logits, labels)
+        loss: Tensor | None
+        if loss_only:
+            assert labels is not None
+            loss = _linear_causal_loss(hidden_states, self.lm_head.weight, labels)
+            logits = hidden_states.new_empty((0,))
+        else:
+            logits = self.lm_head(hidden_states)
+            loss = None if labels is None else _causal_loss(logits, labels)
         output_cache: DenseKVCache | None = tuple(new_cache) if use_cache else None
         return CausalLMOutput(logits=logits, loss=loss, cache=output_cache)
 

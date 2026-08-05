@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Literal, Self
 
 import torch
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -54,6 +54,9 @@ class OptimizationConfig(BaseModel):
         """Return the absolute learning rate for a zero-based step."""
 
         return self.learning_rate * self.lr_multiplier(step)
+
+
+AdamWBackend = Literal["auto", "foreach", "fused"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,8 +111,14 @@ def partition_parameters(model: nn.Module) -> ParameterPartition:
 def build_adamw(
     model: nn.Module,
     config: OptimizationConfig,
+    *,
+    backend: AdamWBackend = "auto",
+    device_type: Literal["cpu", "cuda"] = "cpu",
 ) -> tuple[torch.optim.AdamW, ParameterPartition]:
     """Build pinned AdamW groups and return their auditable partition."""
+
+    if backend == "fused" and device_type != "cuda":
+        raise ValueError("fused AdamW requires CUDA")
 
     partition = partition_parameters(model)
     groups: list[dict[str, Any]] = [
@@ -124,11 +133,19 @@ def build_adamw(
             "group_name": "no_decay",
         },
     ]
+    backend_arguments: dict[str, Any]
+    if backend == "auto":
+        backend_arguments = {"foreach": None, "fused": None}
+    elif backend == "foreach":
+        backend_arguments = {"foreach": True, "fused": False}
+    else:
+        backend_arguments = {"foreach": False, "fused": True}
     optimizer = torch.optim.AdamW(
         groups,
         lr=config.learning_rate_at(0),
         betas=(config.beta1, config.beta2),
         eps=config.epsilon,
+        **backend_arguments,
     )
     return optimizer, partition
 

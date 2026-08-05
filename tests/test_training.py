@@ -247,6 +247,16 @@ class OptimizationTests(unittest.TestCase):
             )
         )
 
+    def test_adamw_backend_is_explicit_and_fused_rejects_cpu(self) -> None:
+        model = _tiny_model()
+        config = OptimizationConfig(total_steps=10)
+        foreach, _ = build_adamw(model, config, backend="foreach")
+
+        self.assertTrue(foreach.defaults["foreach"])
+        self.assertFalse(foreach.defaults["fused"])
+        with self.assertRaisesRegex(ValueError, "requires CUDA"):
+            build_adamw(model, config, backend="fused", device_type="cpu")
+
     def test_optimizer_state_round_trip_reproduces_next_cpu_step(self) -> None:
         first = _tiny_model()
         config = OptimizationConfig(total_steps=10)

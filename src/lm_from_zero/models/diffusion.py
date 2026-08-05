@@ -88,10 +88,9 @@ def corrupt_for_diffusion(
     corrupted = eligible & (uniforms < time.unsqueeze(1))
     nonempty = eligible.any(dim=1)
     missing = nonempty & ~corrupted.any(dim=1)
-    if torch.any(missing):
-        fallback = uniforms.masked_fill(~eligible, torch.inf).argmin(dim=1)
-        rows = torch.nonzero(missing, as_tuple=False).flatten()
-        corrupted[rows, fallback[rows]] = True
+    fallback = uniforms.masked_fill(~eligible, torch.inf).argmin(dim=1)
+    forced = F.one_hot(fallback, num_classes=input_ids.shape[1]).to(dtype=torch.bool)
+    corrupted = corrupted | (forced & missing.unsqueeze(1))
 
     corrupted_input = input_ids.clone()
     corrupted_input[corrupted] = mask_token_id
@@ -111,6 +110,8 @@ def masked_diffusion_loss(
     labels: Tensor,
     eligible_mask: Tensor,
     time: Tensor,
+    *,
+    validate: bool = True,
 ) -> Tensor:
     """Return the per-example eligible-normalized, ``1/t``-weighted loss."""
 
@@ -122,20 +123,24 @@ def masked_diffusion_loss(
         raise ValueError("labels must use torch.long token IDs")
     if time.shape != (logits.shape[0],):
         raise ValueError("time must contain one value per example")
-    if not bool(torch.isfinite(time).all()) or bool(
-        torch.any((time <= 0) | (time > 1))
+    if validate and (
+        not bool(torch.isfinite(time).all())
+        or bool(torch.any((time <= 0) | (time > 1)))
     ):
         raise ValueError("time values must be finite and in (0, 1]")
 
     eligible = eligible_mask.to(device=logits.device, dtype=torch.bool)
     supervised = labels != -100
-    if torch.any(supervised & ~eligible):
-        raise ValueError("supervised labels must be a subset of eligible positions")
     nonempty = eligible.any(dim=1)
-    if torch.any(nonempty & ~supervised.any(dim=1)):
-        raise ValueError("every non-empty example must supervise at least one token")
-    if torch.any(supervised & ((labels < 0) | (labels >= logits.shape[-1]))):
-        raise ValueError("labels contain a token outside the vocabulary")
+    if validate:
+        if torch.any(supervised & ~eligible):
+            raise ValueError("supervised labels must be a subset of eligible positions")
+        if torch.any(nonempty & ~supervised.any(dim=1)):
+            raise ValueError(
+                "every non-empty example must supervise at least one token"
+            )
+        if torch.any(supervised & ((labels < 0) | (labels >= logits.shape[-1]))):
+            raise ValueError("labels contain a token outside the vocabulary")
 
     token_losses = F.cross_entropy(
         logits.reshape(-1, logits.shape[-1]).float(),
@@ -145,10 +150,33 @@ def masked_diffusion_loss(
     ).view_as(labels)
     weighted = token_losses * supervised / time.to(logits.device).unsqueeze(1)
     eligible_counts = eligible.sum(dim=1)
-    if not torch.any(nonempty):
-        return logits.sum() * 0.0
     per_example = weighted.sum(dim=1) / eligible_counts.clamp_min(1)
-    return per_example[nonempty].mean()
+    return (per_example * nonempty).sum() / nonempty.sum().clamp_min(1)
+
+
+def _linear_masked_diffusion_loss(
+    hidden_states: Tensor,
+    linear_weight: Tensor,
+    labels: Tensor,
+    eligible_mask: Tensor,
+    time: Tensor,
+) -> Tensor:
+    """Compute the diffusion objective without full vocabulary logits."""
+
+    token_losses = F.linear_cross_entropy(
+        hidden_states.reshape(-1, hidden_states.shape[-1]),
+        linear_weight,
+        labels.reshape(-1),
+        reduction="none",
+        ignore_index=-100,
+    ).view_as(labels)
+    eligible = eligible_mask.to(device=hidden_states.device, dtype=torch.bool)
+    supervised = labels != -100
+    weighted = token_losses * supervised / time.to(hidden_states.device).unsqueeze(1)
+    counts = eligible.sum(dim=1)
+    nonempty = counts > 0
+    per_example = weighted.sum(dim=1) / counts.clamp_min(1)
+    return (per_example * nonempty).sum() / nonempty.sum().clamp_min(1)
 
 
 class DiffusionAttention(nn.Module):
@@ -342,14 +370,37 @@ class MaskedDiffusionForMaskedLM(nn.Module):
         labels: Tensor | None = None,
         eligible_mask: Tensor | None = None,
         time: Tensor | None = None,
+        loss_backend: str = "full",
+        loss_only: bool = False,
+        validate_inputs: bool = True,
     ) -> MaskedDiffusionOutput:
         """Run bidirectional logits and the optional masked objective."""
 
-        resolved_mask, positions = self._validate_inputs(
-            input_ids,
-            attention_mask,
-            position_ids,
-        )
+        if loss_backend not in {"full", "linear"}:
+            raise ValueError("unsupported diffusion loss backend")
+        if loss_only and (labels is None or loss_backend != "linear"):
+            raise ValueError("loss-only forward requires labels and linear loss")
+        if validate_inputs:
+            resolved_mask, positions = self._validate_inputs(
+                input_ids,
+                attention_mask,
+                position_ids,
+            )
+        else:
+            resolved_mask = (
+                None
+                if attention_mask is None
+                else attention_mask.to(device=input_ids.device, dtype=torch.bool)
+            )
+            positions = (
+                torch.arange(
+                    input_ids.shape[1],
+                    device=input_ids.device,
+                    dtype=torch.long,
+                ).expand(input_ids.shape[0], -1)
+                if position_ids is None
+                else position_ids
+            )
         hidden_states = self.embed_tokens(input_ids)
         cosine, sine = self.rotary_embedding(positions)
         for layer in self.layers:
@@ -359,7 +410,10 @@ class MaskedDiffusionForMaskedLM(nn.Module):
                 sine,
                 attention_mask=resolved_mask,
             )
-        logits = self.lm_head(self.norm(hidden_states))
+        hidden_states = self.norm(hidden_states)
+        logits = (
+            hidden_states.new_empty((0,)) if loss_only else self.lm_head(hidden_states)
+        )
         objective_arguments = (labels, eligible_mask, time)
         if all(argument is None for argument in objective_arguments):
             loss = None
@@ -371,11 +425,22 @@ class MaskedDiffusionForMaskedLM(nn.Module):
             assert labels is not None
             assert eligible_mask is not None
             assert time is not None
-            loss = masked_diffusion_loss(
-                logits,
-                labels,
-                eligible_mask,
-                time,
+            loss = (
+                _linear_masked_diffusion_loss(
+                    hidden_states,
+                    self.lm_head.weight,
+                    labels,
+                    eligible_mask,
+                    time,
+                )
+                if loss_only
+                else masked_diffusion_loss(
+                    logits,
+                    labels,
+                    eligible_mask,
+                    time,
+                    validate=validate_inputs,
+                )
             )
         return MaskedDiffusionOutput(logits=logits, loss=loss)
 

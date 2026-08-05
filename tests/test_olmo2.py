@@ -160,6 +160,38 @@ class Olmo2Tests(unittest.TestCase):
             )
         )
 
+    def test_linear_cross_entropy_loss_and_gradients_match_full_logits(self) -> None:
+        model = Olmo2ForCausalLM(tiny_config())
+        input_ids = torch.randint(8, model.config.vocab_size, (2, 7))
+        labels = input_ids.clone()
+        labels[0, 3] = -100
+
+        full = cast(Tensor, model(input_ids, labels=labels).loss)
+        torch.autograd.backward(full)
+        full_gradients = {
+            name: cast(Tensor, parameter.grad).clone()
+            for name, parameter in model.named_parameters()
+        }
+        model.zero_grad(set_to_none=True)
+        linear_output = model(
+            input_ids,
+            labels=labels,
+            loss_backend="linear",
+            loss_only=True,
+        )
+        linear = cast(Tensor, linear_output.loss)
+        torch.autograd.backward(linear)
+
+        self.assertEqual(linear_output.logits.numel(), 0)
+        torch.testing.assert_close(linear, full, atol=2e-6, rtol=2e-6)
+        for name, parameter in model.named_parameters():
+            torch.testing.assert_close(
+                cast(Tensor, parameter.grad),
+                full_gradients[name],
+                atol=2e-6,
+                rtol=2e-5,
+            )
+
     def test_all_ignored_or_single_token_loss_is_differentiable_zero(self) -> None:
         model = Olmo2ForCausalLM(tiny_config())
         for input_ids, labels in (

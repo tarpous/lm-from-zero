@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, cast
+from typing import Annotated, Any, Literal, Protocol, TextIO, cast
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,6 +26,7 @@ class OptimizerMetricRecord(BaseModel):
     event: Literal["optimizer_step"] = "optimizer_step"
     recorded_at_utc: datetime
     optimizer_step: Annotated[int, Field(gt=0)]
+    measurement_optimizer_steps: Annotated[int, Field(gt=0)] = 1
     loss: Annotated[float, Field(ge=0)]
     learning_rate: Annotated[float, Field(gt=0)]
     gradient_norm: Annotated[float, Field(ge=0)]
@@ -51,6 +53,7 @@ class ScalarWriter(Protocol):
 
 
 WriterFactory = Callable[[Path, int | None], ScalarWriter]
+Clock = Callable[[], float]
 
 
 def _canonical_json(payload: Mapping[str, Any]) -> str:
@@ -174,13 +177,29 @@ class TrainingMetricSinks:
         tensorboard_directory: str | Path | None,
         parquet_path: str | Path | None,
         resume_optimizer_step: int,
+        durable_every_steps: int = 50,
+        durable_every_seconds: float = 5.0,
         writer_factory: WriterFactory = _default_writer_factory,
+        clock: Clock = time.monotonic,
+        duration_clock: Clock = time.perf_counter,
     ) -> None:
         if resume_optimizer_step < 0:
             raise ValueError("resume optimizer step cannot be negative")
+        if durable_every_steps <= 0:
+            raise ValueError("durable metric step interval must be positive")
+        if durable_every_seconds <= 0:
+            raise ValueError("durable metric time interval must be positive")
         self.jsonl_path = Path(jsonl_path)
         self.parquet_path = None if parquet_path is None else Path(parquet_path)
+        self._durable_every_steps = durable_every_steps
+        self._durable_every_seconds = durable_every_seconds
+        self._clock = clock
+        self._duration_clock = duration_clock
+        self._optimizer_steps_since_durable_sync = 0
+        self._last_durable_sync = clock()
+        self._metric_fsync_seconds = 0.0
         self._closed = False
+        self._jsonl_handle = self._open_jsonl_handle()
         self._writer = (
             None
             if tensorboard_directory is None
@@ -190,12 +209,64 @@ class TrainingMetricSinks:
             )
         )
 
-    def append_event(self, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """Append one event to the durable source log."""
+    def _open_jsonl_handle(self) -> TextIO:
+        try:
+            self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            return self.jsonl_path.open("a", encoding="utf-8", newline="\n")
+        except OSError as error:
+            raise TrainingMetricsError(
+                "cannot append the training JSONL log"
+            ) from error
+
+    def _sync_jsonl(self, *, now: float) -> None:
+        started_at = self._duration_clock()
+        try:
+            self._jsonl_handle.flush()
+            os.fsync(self._jsonl_handle.fileno())
+        except OSError as error:
+            raise TrainingMetricsError("cannot sync the training JSONL log") from error
+        self._metric_fsync_seconds += self._duration_clock() - started_at
+        self._optimizer_steps_since_durable_sync = 0
+        self._last_durable_sync = now
+
+    @property
+    def metric_fsync_seconds(self) -> float:
+        """Return cumulative time spent flushing and fsyncing canonical JSONL."""
+
+        return self._metric_fsync_seconds
+
+    def durable_sync(self) -> None:
+        """Force pending canonical JSONL events to durable storage."""
 
         if self._closed:
             raise TrainingMetricsError("training metric sinks are closed")
-        return append_training_event(self.jsonl_path, payload)
+        self._sync_jsonl(now=self._clock())
+
+    def append_event(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """Append one event and durably sync it on the configured schedule."""
+
+        if self._closed:
+            raise TrainingMetricsError("training metric sinks are closed")
+        record = dict(payload)
+        record["recorded_at_utc"] = datetime.now(UTC).isoformat()
+        encoded = _canonical_json(record)
+        try:
+            self._jsonl_handle.write(encoded)
+            self._jsonl_handle.write("\n")
+        except OSError as error:
+            raise TrainingMetricsError(
+                "cannot append the training JSONL log"
+            ) from error
+
+        if record.get("event") == "optimizer_step":
+            self._optimizer_steps_since_durable_sync += 1
+        now = self._clock()
+        if (
+            self._optimizer_steps_since_durable_sync >= self._durable_every_steps
+            or now - self._last_durable_sync >= self._durable_every_seconds
+        ):
+            self._sync_jsonl(now=now)
+        return record
 
     def log_optimizer_step(self, payload: Mapping[str, Any]) -> None:
         """Persist one step and mirror its scalar fields to TensorBoard."""
@@ -230,6 +301,7 @@ class TrainingMetricSinks:
 
         if self._closed:
             raise TrainingMetricsError("training metric sinks are closed")
+        self.durable_sync()
         if self._writer is not None:
             self._writer.flush()
         if self.parquet_path is not None:
@@ -245,6 +317,7 @@ class TrainingMetricSinks:
         finally:
             if self._writer is not None:
                 self._writer.close()
+            self._jsonl_handle.close()
             self._closed = True
 
     def abort(self) -> None:
@@ -253,9 +326,11 @@ class TrainingMetricSinks:
         if self._closed:
             return
         try:
+            self.durable_sync()
             if self._writer is not None:
                 self._writer.flush()
         finally:
             if self._writer is not None:
                 self._writer.close()
+            self._jsonl_handle.close()
             self._closed = True
