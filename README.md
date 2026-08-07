@@ -700,8 +700,25 @@ The deterministic native chat check is in
 `reports/zero-20m-sft-generation.json`. The small model produced
 tool-call-shaped continuations for these prompts rather than consistently
 answering them directly, so the training lifecycle is complete while chat
-quality still needs a held-out evaluation. The next gate is approval to
-publish this milestone and/or download the preference data for DPO.
+quality still needs a held-out evaluation. The next gate is approval to obtain
+the pinned preference data for DPO.
+
+## Preference optimization foundation
+
+The project-owned DPO foundation is now available in
+`lm_from_zero.post_training.dpo`. It validates canonical preference pairs with
+one shared prompt, renders chosen and rejected responses with identical prompt
+prefixes and assistant-only response masks, supports deterministic left
+truncation, computes summed response log-probabilities, and implements the
+standard logistic DPO objective with the planned `beta=0.1`. The immutable
+reference-log-probability cache identity binds model, tokenizer, checkpoint,
+chat-template, and context-length hashes so the same frozen reference can be
+reused by DPO and APO.
+
+The next gated action is to inspect and obtain the pinned
+`HuggingFaceH4/ultrafeedback_binarized` source, prepare its deterministic
+50,000-pair manifest, and run a bounded DPO smoke. Preference data and cached
+reference logits remain local ignored artifacts.
 
 ## Training checkpoints
 

@@ -1,5 +1,26 @@
 # Session handoff: dense vertical-slice implementation
 
+## Current update (August 7, 2026, DPO foundation)
+
+The completed hybrid-Muon SFT milestone is published on `origin/main` at
+`a688778a0a6c08d2931c175bdad2f513483bfdfc`. The offline verification gate
+passed Ruff, strict mypy, 262 tests, and 85.20% total branch coverage.
+
+The next post-training layer is now implemented locally in
+`src/lm_from_zero/post_training/dpo.py`. It provides a validated canonical
+preference-pair schema, deterministic chosen/rejected rendering against one
+shared prompt, prompt-masked response log-probabilities, the standard DPO
+objective, and a reference-log-probability cache identity bound to model,
+tokenizer, checkpoint, template, and context hashes. Focused tests cover
+schema rejection, shared-prefix rendering, truncation, hand-calculated loss,
+gradients, and cache-key invalidation.
+
+The preference dataset is not yet present locally. The next gated action is to
+inspect and then obtain the pinned `HuggingFaceH4/ultrafeedback_binarized`
+training source, prepare its deterministic 50,000-pair manifest, and run the
+bounded DPO smoke before any long preference-optimization run. Raw data and
+reference logits remain outside Git.
+
 ## Session closeout (August 7, 2026, M8 execution closeout)
 
 The pushed M8 downstream revision `64a4631` includes pinned `tqdm` live progress
@@ -48,7 +69,7 @@ The deterministic native chat check is
 mostly emitted tool-call-shaped continuations rather than direct answers. This
 is the first behavior result for the SFT lifecycle; held-out chat evaluation
 is still required before making a quality claim. The next gate is approval to
-publish this milestone and/or download the preference data for DPO.
+obtain the pinned preference data for DPO.
 
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
@@ -76,8 +97,7 @@ selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
 downstream evaluation. Fixed-window validation and native generation for that
 union are complete. The full SFT lifecycle now has a completed training run,
 checkpoint, and native generation evidence. The next external gate is
-approval to publish this milestone and/or download the preference data for
-DPO.
+approval to obtain the pinned preference data for DPO.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 
