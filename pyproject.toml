@@ -73,6 +73,7 @@ omit = [
     "src/lm_from_zero/post_training/sft_smoke.py",
     "src/lm_from_zero/post_training/sft_train.py",
     "src/lm_from_zero/post_training/sft_eval.py",
+    "src/lm_from_zero/post_training/dpo_smoke.py",
 ]
 
 [tool.coverage.report]

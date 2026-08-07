@@ -700,8 +700,9 @@ The deterministic native chat check is in
 `reports/zero-20m-sft-generation.json`. The small model produced
 tool-call-shaped continuations for these prompts rather than consistently
 answering them directly, so the training lifecycle is complete while chat
-quality still needs a held-out evaluation. The preference manifest is now
-prepared; the next gate is approval for the bounded DPO CUDA smoke.
+quality still needs a held-out evaluation. The preference manifest and bounded
+DPO smoke are now complete; the next gate is approval for the long one-epoch
+DPO run.
 
 ## Preference optimization foundation
 
@@ -728,9 +729,15 @@ The manifest binds the tokenizer and chat-template hashes, a 1,024-token
 left-truncation policy, and 10,873 selected pairs requiring truncation. Raw
 preference data and cached reference logits remain local ignored artifacts.
 
-The next gated action is the bounded DPO CUDA smoke on the selected SFT
-checkpoint. A long preference-optimization run follows only after that smoke
-passes its artifact and finite-loss checks.
+The bounded DPO CUDA smoke completed on the RTX 4080 SUPER with bf16, batch size
+2, a 512-token bound, and two AdamW updates initialized from the final
+hybrid-Muon SFT checkpoint. Both policy and frozen-reference models loaded
+from the validated SFT checkpoint, and reference log-probabilities were
+computed once. Loss decreased from `0.6931472` to `0.6208477`; gradients were
+finite and preference accuracy reached `1.0` on the second update. Generated
+evidence is `reports/zero-20m-dpo-smoke.json`. The next gated action is
+approval for the long one-epoch DPO run; no long preference-optimization run
+has started.
 
 ## Training checkpoints
 

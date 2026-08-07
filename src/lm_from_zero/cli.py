@@ -107,6 +107,35 @@ def run_sft_smoke_command(
     typer.echo(report.model_dump_json())
 
 
+@app.command("run-dpo-smoke")
+def run_dpo_smoke_command(
+    dataset_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    tokenizer: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    source_checkpoint: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/sft/hybrid-muon-seed-2027/checkpoints/"
+        "step-000000012500"
+    ),
+    output: Annotated[Path, typer.Option()] = Path("reports/zero-20m-dpo-smoke.json"),
+    batch_size: Annotated[int, typer.Option(min=1)] = 2,
+    max_length: Annotated[int, typer.Option(min=2)] = 512,
+    steps: Annotated[int, typer.Option(min=1)] = 2,
+) -> None:
+    """Run the bounded CUDA DPO smoke with a frozen SFT reference."""
+
+    from lm_from_zero.post_training.dpo_smoke import run_dpo_smoke
+
+    report = run_dpo_smoke(
+        dataset_manifest_path=dataset_manifest,
+        tokenizer_path=tokenizer,
+        source_checkpoint=source_checkpoint,
+        output_path=output,
+        batch_size=batch_size,
+        max_length=max_length,
+        steps=steps,
+    )
+    typer.echo(report.model_dump_json())
+
+
 @app.command("run-sft")
 def run_sft_command(
     dataset_manifest: Annotated[Path, typer.Option()] = Path(

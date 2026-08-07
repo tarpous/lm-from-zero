@@ -31,9 +31,16 @@ role-delimited chat-template hash, the 1,024-token left-truncation policy, and
 10,873 selected pairs that require truncation. Raw data and reference logits
 remain outside Git.
 
-The next gated action is the bounded DPO CUDA smoke on the selected SFT
-checkpoint; no long preference-optimization run should start before that
-smoke is validated.
+The bounded DPO CUDA smoke then completed on the RTX 4080 SUPER with bf16,
+batch size 2, a 512-token bound, and two AdamW updates initialized from the
+final hybrid-Muon SFT checkpoint. Both policy and frozen-reference models
+loaded from the validated SFT checkpoint; reference log-probabilities were
+computed once. Loss decreased from `0.6931472` to `0.6208477`, gradient norms
+were finite (`109.1279` then `93.2850`), and preference accuracy reached `1.0`
+on the second update. Generated evidence is
+`reports/zero-20m-dpo-smoke.json`, including the shared reference-cache
+identity. The next gated action is approval for the long one-epoch DPO run;
+no long preference-optimization run has started.
 
 ## Session closeout (August 7, 2026, M8 execution closeout)
 
@@ -82,8 +89,9 @@ The deterministic native chat check is
 `reports/zero-20m-sft-generation.json`. On three fixed prompts, the 20M model
 mostly emitted tool-call-shaped continuations rather than direct answers. This
 is the first behavior result for the SFT lifecycle; held-out chat evaluation
-is still required before making a quality claim. The preference manifest is
-now prepared; the next gate is approval for the bounded DPO CUDA smoke.
+is still required before making a quality claim. The preference manifest and
+bounded DPO smoke are now complete; the next gate is approval for the long
+one-epoch DPO run.
 
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
@@ -110,8 +118,9 @@ selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
 `tied_embeddings` as fastest, and recommends the four-variant union for
 downstream evaluation. Fixed-window validation and native generation for that
 union are complete. The full SFT lifecycle now has a completed training run,
-checkpoint, and native generation evidence. The preference manifest is now
-prepared; the next external gate is the bounded DPO CUDA smoke.
+checkpoint, and native generation evidence. The preference manifest and
+bounded DPO smoke are now complete; the next external gate is the long
+one-epoch DPO run.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 
