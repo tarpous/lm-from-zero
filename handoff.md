@@ -10,6 +10,22 @@ mypy, and 245 tests; total branch coverage is 85.10%. This revision is local
 only in the sense that the ignored run artifacts remain local; the source
 revision was pushed to `origin/main`.
 
+This closeout now also includes the selected-variant downstream evidence. The
+canonical report is
+`reports/zero-20m-dense-ablations-downstream.json`, built from seed `2027` with
+24 fixed validation batches (192 sequences, 196,416 predicted tokens) and 16
+greedy generation tokens for each selected variant. Mean validation loss and
+perplexity were `1.7428036`/`5.7133` for `hybrid_muon`, `1.7663516`/`5.8495`
+for `mha`, `1.7749760`/`5.9001` for `layer_norm`, and `1.7624807`/`5.8269`
+for `tied_embeddings`. Every sample produced the same continuation:
+`, there was a little girl named Lily. She loved to play outside in the`.
+
+The current working-tree implementation adds the variant-aware evaluation and
+generation CLI controls plus the downstream report builder and regression
+coverage. Its complete offline gate passes 249 tests, Ruff formatting/lint,
+strict mypy, and 85.01% total branch coverage. These source changes are not
+committed or pushed yet.
+
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
 stream ended at step 4 with finite loss, gradient, throughput, and memory
@@ -29,8 +45,12 @@ the exact 500M-token scheduler to step 12,208, then copied into the canonical
 directory and validated. The regenerated M8 plan marks all three dense
 baseline seeds as `reuse_m7_screening`; its `execution_ready` flag remains
 false by plan-schema contract even though the 21 full runs are complete. The
-next step is CPU-side M8 result aggregation and downstream evaluation, not
-another 100M-token training pass.
+CPU-only aggregation now validates all 21 jobs and writes
+`artifacts/dense-ablations-clean-20260807/report.json`. Its generated report
+selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
+`tied_embeddings` as fastest, and recommends the four-variant union for
+downstream evaluation. Fixed-window validation and native generation for that
+union are complete; the next gate is the source commit/push decision.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 

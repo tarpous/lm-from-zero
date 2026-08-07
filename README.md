@@ -628,6 +628,43 @@ are retained under `artifacts/dense-ablations-clean-20260807/` and were
 audited for checkpoint integrity, the step-12,208 / 100,007,936-token
 boundary, finite terminal metrics, and clean commit `3e5ee58` provenance.
 
+Aggregate the completed matrix into a deterministic CPU-only comparison report:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  build-dense-ablation-report \
+  artifacts/dense-ablations/plan.json \
+  artifacts/dense-ablations-clean-20260807 \
+  --output artifacts/dense-ablations-clean-20260807/report.json
+```
+
+The generated report validates all 21 final checkpoints and event streams,
+then records per-seed evidence, mean/sample-standard-deviation summaries,
+parameter counts, throughput, memory, and deterministic rankings. The current
+loss finalists are `hybrid_muon`, `mha`, and `layer_norm`; `tied_embeddings` is
+the fastest variant. The recommended downstream evaluation set is their union.
+
+The selected variants were then evaluated on the fixed 24-batch validation
+window (192 sequences and 196,416 predicted tokens) and generated 16 greedy
+tokens from the `Once upon a time` prompt. The canonical downstream report is
+[`reports/zero-20m-dense-ablations-downstream.json`](reports/zero-20m-dense-ablations-downstream.json):
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  build-dense-ablation-downstream-report \
+  artifacts/dense-ablations-clean-20260807/report.json \
+  --evaluation-root artifacts/evaluations \
+  --generation-root artifacts/generations \
+  --seed 2027 \
+  --output reports/zero-20m-dense-ablations-downstream.json
+```
+
+The validation mean losses/perplexities are `1.7428036`/`5.7133` for
+`hybrid_muon`, `1.7663516`/`5.8495` for `mha`, `1.7749760`/`5.9001` for
+`layer_norm`, and `1.7624807`/`5.8269` for `tied_embeddings`. All four
+deterministic samples produced the same continuation:
+`, there was a little girl named Lily. She loved to play outside in the`.
+
 ## Training checkpoints
 
 Each published recovery point is an immutable directory under an ignored

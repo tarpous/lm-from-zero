@@ -34,6 +34,16 @@ from lm_from_zero.tokenizer.pipeline import (
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 
+DenseModelVariantOption = Literal[
+    "baseline",
+    "learned_absolute_positions",
+    "layer_norm",
+    "gelu",
+    "mha",
+    "without_qk_norm",
+    "tied_embeddings",
+]
+
 
 @app.callback()
 def main() -> None:
@@ -535,6 +545,51 @@ def plan_dense_ablations_command(
     typer.echo(plan.canonical_json())
 
 
+@app.command("build-dense-ablation-report")
+def build_dense_ablation_report_command(
+    plan: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    artifact_root: Annotated[Path, typer.Argument(exists=True, file_okay=False)],
+    output: Annotated[Path, typer.Option()],
+) -> None:
+    """Validate and aggregate completed M8 dense-variant artifacts."""
+
+    from lm_from_zero.dense_ablation_report import (
+        build_dense_ablation_report,
+        write_dense_ablation_report,
+    )
+
+    report = build_dense_ablation_report(plan, artifact_root)
+    write_dense_ablation_report(output, report)
+    typer.echo(report.model_dump_json())
+
+
+@app.command("build-dense-ablation-downstream-report")
+def build_dense_ablation_downstream_report_command(
+    ablation_report: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    evaluation_root: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    generation_root: Annotated[Path, typer.Option(exists=True, file_okay=False)],
+    seed: Annotated[int, typer.Option()] = 2_027,
+    output: Annotated[Path, typer.Option()] = Path(
+        "reports/zero-20m-dense-ablations-downstream.json"
+    ),
+) -> None:
+    """Bind selected M8 validation and generation evidence to checkpoints."""
+
+    from lm_from_zero.dense_ablation_report import (
+        build_dense_ablation_downstream_report,
+        write_dense_ablation_downstream_report,
+    )
+
+    report = build_dense_ablation_downstream_report(
+        ablation_report,
+        evaluation_root,
+        generation_root,
+        seed=seed,
+    )
+    write_dense_ablation_downstream_report(output, report)
+    typer.echo(report.model_dump_json())
+
+
 @app.command("pretrain-mamba2")
 def pretrain_mamba2_command(
     build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
@@ -1019,6 +1074,7 @@ def evaluate_dense_command(
     split: Annotated[str, typer.Option()] = "validation",
     device: Annotated[str, typer.Option()] = "cpu",
     precision: Annotated[str, typer.Option()] = "fp32",
+    model_variant: Annotated[DenseModelVariantOption, typer.Option()] = "baseline",
     jsonl_output: Annotated[Path | None, typer.Option()] = None,
 ) -> None:
     """Evaluate a validated dense checkpoint on fixed non-repeating shards."""
@@ -1054,7 +1110,7 @@ def evaluate_dense_command(
         }
     )
     source = ShardBatchSource(build_manifest, batch_config)
-    model = Olmo2ForCausalLM(model_config)
+    model = Olmo2ForCausalLM(model_config, variant=model_variant)
     load_checkpoint_model(
         checkpoint,
         model=model,
@@ -1279,6 +1335,7 @@ def generate_dense_command(
     top_p: Annotated[float | None, typer.Option(min=1e-12, max=1)] = None,
     seed: Annotated[int, typer.Option()] = 1337,
     device: Annotated[str, typer.Option()] = "cpu",
+    model_variant: Annotated[DenseModelVariantOption, typer.Option()] = "baseline",
     allow_raw_special_tokens: Annotated[bool, typer.Option()] = False,
     stream: Annotated[bool, typer.Option()] = False,
     jsonl_output: Annotated[Path | None, typer.Option()] = None,
@@ -1317,7 +1374,7 @@ def generate_dense_command(
     )
     if tokenizer.model_hash != training.tokenizer_hash:
         raise DataValidationError("tokenizer file does not match its manifest")
-    model = Olmo2ForCausalLM(model_config)
+    model = Olmo2ForCausalLM(model_config, variant=model_variant)
     load_checkpoint_model(
         checkpoint,
         model=model,
