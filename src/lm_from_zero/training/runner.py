@@ -29,6 +29,8 @@ from lm_from_zero.models import (
     Olmo2ForCausalLM,
     base_pretraining_eligible_mask,
     corrupt_for_diffusion,
+    dense_variant_forward_flops,
+    dense_variant_parameter_breakdown,
 )
 from lm_from_zero.training.checkpointing import (
     CheckpointBinding,
@@ -51,7 +53,9 @@ from lm_from_zero.training.metrics import TrainingMetricSinks
 from lm_from_zero.training.optimization import (
     AdamWBackend,
     OptimizationConfig,
+    OptimizerVariant,
     build_adamw,
+    build_hybrid_muon,
     clip_gradients,
     set_learning_rate,
 )
@@ -67,6 +71,15 @@ CompileMode = Literal[
 LossBackend = Literal["full", "linear"]
 SDPABackend = Literal["auto", "flash", "efficient", "math"]
 MatmulPrecision = Literal["highest", "high"]
+DenseModelVariant = Literal[
+    "baseline",
+    "learned_absolute_positions",
+    "layer_norm",
+    "gelu",
+    "mha",
+    "without_qk_norm",
+    "tied_embeddings",
+]
 
 
 class TrainingRunError(RuntimeError):
@@ -92,6 +105,8 @@ class DenseTrainingConfig(BaseModel):
     compile_model: bool = False
     compile_mode: CompileMode = "default"
     adamw_backend: AdamWBackend = "auto"
+    model_variant: DenseModelVariant = "baseline"
+    optimizer_variant: OptimizerVariant = "adamw"
     loss_backend: LossBackend = "full"
     sdpa_backend: SDPABackend = "auto"
     float32_matmul_precision: MatmulPrecision = "highest"
@@ -138,6 +153,14 @@ class DenseTrainingConfig(BaseModel):
         """Return a rank-independent canonical training configuration."""
 
         payload = self.model_dump(mode="json")
+        # These are research controls, not part of the canonical M7 contract.
+        # Omitting their defaults keeps existing checkpoint training hashes and
+        # resume bindings byte-for-byte stable while non-default variants are
+        # still unambiguously hashed.
+        if payload["model_variant"] == "baseline":
+            payload.pop("model_variant")
+        if payload["optimizer_variant"] == "adamw":
+            payload.pop("optimizer_variant")
         batch = cast(dict[str, Any], payload["batch"])
         batch["rank"] = 0
         return json.dumps(
@@ -152,6 +175,21 @@ class DenseTrainingConfig(BaseModel):
         """Return the resolved training-configuration hash."""
 
         return sha256(self.canonical_json().encode()).hexdigest()
+
+    @property
+    def variant_spec_sha256(self) -> str:
+        """Hash the explicit model/optimizer research controls."""
+
+        value = json.dumps(
+            {
+                "model_variant": self.model_variant,
+                "optimizer_variant": self.optimizer_variant,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return sha256(value.encode()).hexdigest()
 
 
 class Mamba2TrainingConfig(BaseModel):
@@ -355,6 +393,8 @@ class DenseRunPlan(BaseModel):
     compile_model: bool
     compile_mode: CompileMode
     adamw_backend: AdamWBackend
+    model_variant: DenseModelVariant = "baseline"
+    optimizer_variant: OptimizerVariant = "adamw"
     loss_backend: LossBackend
     sdpa_backend: SDPABackend
     float32_matmul_precision: MatmulPrecision
@@ -533,10 +573,20 @@ def create_dense_run_plan(
     _validate_source_binding(config, source)
     if estimated_tokens_per_second is not None and estimated_tokens_per_second <= 0:
         raise ValueError("estimated token throughput must be positive")
-    parameters = config.model.parameter_breakdown().total
-    forward_flops = config.model.forward_flops(
-        config.batch.sequence_length
-    ).total_flops_per_token
+    if isinstance(config, DenseTrainingConfig):
+        parameters = dense_variant_parameter_breakdown(
+            config.model, config.model_variant
+        ).total
+        forward_flops = dense_variant_forward_flops(
+            config.model,
+            config.batch.sequence_length,
+            config.model_variant,
+        ).total_flops_per_token
+    else:
+        parameters = config.model.parameter_breakdown().total
+        forward_flops = config.model.forward_flops(
+            config.batch.sequence_length
+        ).total_flops_per_token
     estimated_seconds = (
         None
         if estimated_tokens_per_second is None
@@ -572,6 +622,16 @@ def create_dense_run_plan(
         compile_model=config.compile_model,
         compile_mode=config.compile_mode,
         adamw_backend=config.adamw_backend,
+        model_variant=(
+            config.model_variant
+            if isinstance(config, DenseTrainingConfig)
+            else "baseline"
+        ),
+        optimizer_variant=(
+            config.optimizer_variant
+            if isinstance(config, DenseTrainingConfig)
+            else "adamw"
+        ),
         loss_backend=config.loss_backend,
         sdpa_backend=config.sdpa_backend,
         float32_matmul_precision=config.float32_matmul_precision,
@@ -959,6 +1019,12 @@ class CausalTrainer:
             raise TrainingRunError(
                 "model instance does not match the run configuration"
             )
+        if isinstance(config, DenseTrainingConfig):
+            model_variant = getattr(model, "variant", "baseline")
+            if model_variant != config.model_variant:
+                raise TrainingRunError(
+                    "dense model variant does not match the run configuration"
+                )
         if config.device == "cuda" and not torch.cuda.is_available():
             raise TrainingRunError(
                 "CUDA training was requested but CUDA is unavailable"
@@ -1000,12 +1066,22 @@ class CausalTrainer:
             None if tensorboard_directory is None else Path(tensorboard_directory)
         )
         self.parquet_log = None if parquet_log is None else Path(parquet_log)
-        self.optimizer, _ = build_adamw(
-            self.model,
-            config.optimization,
-            backend=config.adamw_backend,
-            device_type=config.device,
-        )
+        self.optimizer: torch.optim.Optimizer
+        if isinstance(config, DenseTrainingConfig) and config.optimizer_variant == (
+            "hybrid_muon"
+        ):
+            self.optimizer, _ = build_hybrid_muon(
+                self.model,
+                config.optimization,
+                device_type=config.device,
+            )
+        else:
+            self.optimizer, _ = build_adamw(
+                self.model,
+                config.optimization,
+                backend=config.adamw_backend,
+                device_type=config.device,
+            )
         self.binding: CheckpointBinding = create_checkpoint_binding(
             architecture=config.model.architecture,
             resolved_model_config=config.model.model_dump(mode="json"),
@@ -1017,10 +1093,22 @@ class CausalTrainer:
         )
 
     def _base_scheduler_state(self, optimizer_step: int) -> dict[str, Any]:
-        return {
+        state: dict[str, Any] = {
             "next_optimizer_step": optimizer_step,
             "training_config_sha256": self.config.config_hash,
         }
+        if isinstance(self.config, DenseTrainingConfig) and (
+            self.config.model_variant != "baseline"
+            or self.config.optimizer_variant != "adamw"
+        ):
+            state.update(
+                {
+                    "dense_model_variant": self.config.model_variant,
+                    "dense_optimizer_variant": self.config.optimizer_variant,
+                    "variant_spec_sha256": self.config.variant_spec_sha256,
+                }
+            )
+        return state
 
     def _rank_recovery_state(self, cursor: BatchCursor) -> dict[str, Any]:
         return {

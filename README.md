@@ -574,6 +574,42 @@ checkpoint paths. The read-only audit validated all 15 retained checkpoints.
 The ignored checkpoint and event artifacts remain under
 `artifacts/architecture-study/` for downstream evaluation and export.
 
+The downstream closeout uses 24 fixed non-wrapping validation batches for each
+terminal checkpoint. Dense and Mamba-2 records report causal loss/perplexity;
+diffusion records masked-reconstruction loss and its variational upper bound.
+All nine native generation samples are recorded under
+`artifacts/generations/m7-*.jsonl`. Dense, diffusion, and both screening
+Mamba-2 Hugging Face exports passed their parity contracts. The full seed-1337
+Mamba-2 export is intentionally not published because its strict fp32 parity
+check measured a `2.7298927e-05` maximum absolute error against the `1e-05`
+tolerance.
+
+## Milestone 8 dense-ablation planning
+
+The first M8 step is CPU-only planning. It freezes the reusable M7 dense
+100M-token screening baselines and seven explicitly named single-variable
+variants across seeds `1337`, `2027`, and `3407`:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
+  plan-dense-ablations \
+  artifacts/architecture-study/plan.json \
+  --output artifacts/dense-ablations/plan.json
+```
+
+The generated plan contains 24 jobs but is deliberately
+`execution_ready=false`: the canonical baseline jobs are explicit; two reuse
+the M7 dense screening checkpoints and seed `1337` requires recovery. All 21
+research jobs now have executable variant
+controls and are marked `ready_for_bounded_gpu_smoke`. The current local
+artifact inventory is also recorded: seed `1337` needs M7 screening-checkpoint
+recovery, while seeds `2027` and `3407` can reuse their screening checkpoints.
+The model variants,
+hybrid Muon/AdamW partition, runner controls, checkpoint-resume layout, and
+standard export rejection are CPU-tested. The plan remains GPU-gated until
+each variant passes a short RTX 4080 SUPER numerical/throughput smoke; no
+100M-token M8 run may start yet.
+
 ## Training checkpoints
 
 Each published recovery point is an immutable directory under an ignored
@@ -653,6 +689,16 @@ effective token throughput, and CUDA peak allocated/reserved bytes when
 applicable. The runner saves a final checkpoint even when neither periodic
 trigger fires. Resume rejects a changed training-configuration hash as well as
 the checkpoint binding mismatches documented above.
+
+Milestone-8 dense pilots use the same command with explicit
+`--model-variant` values (`learned_absolute_positions`, `layer_norm`, `gelu`,
+`mha`, `without_qk_norm`, or `tied_embeddings`). The optimizer ablation keeps
+the baseline model and sets `--optimizer-variant hybrid_muon`; it partitions
+eligible hidden matrices to Muon and all remaining parameters to AdamW. Both
+controls are included in non-default training hashes and scheduler recovery
+state, while their baseline defaults are omitted so existing M7 hashes remain
+unchanged. Standard dense HF export accepts only the baseline model/optimizer
+pair.
 
 When the two metric options are omitted, TensorBoard defaults to a
 `tensorboard/` sibling of the JSONL log and Parquet defaults to the JSONL path

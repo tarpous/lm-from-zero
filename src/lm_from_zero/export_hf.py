@@ -38,7 +38,8 @@ from lm_from_zero.tokenizer.bpe import (
     ByteBPE,
 )
 from lm_from_zero.tokenizer.pipeline import load_training_manifest
-from lm_from_zero.training import load_checkpoint_model, validate_checkpoint
+from lm_from_zero.training import load_checkpoint_model
+from lm_from_zero.training.checkpointing import _validate_checkpoint
 
 EXPORT_FORMAT = "lm-from-zero-hugging-face-export"
 EXPORT_FORMAT_VERSION = 1
@@ -357,7 +358,19 @@ def export_dense_to_hugging_face(
     """Validate, convert, parity-check, and atomically publish a dense export."""
 
     checkpoint_path = Path(checkpoint_directory)
-    checkpoint = validate_checkpoint(checkpoint_path)
+    validated_checkpoint = _validate_checkpoint(checkpoint_path)
+    checkpoint = validated_checkpoint.manifest
+    scheduler_state = validated_checkpoint.scheduler_state
+    if scheduler_state.get("dense_model_variant", "baseline") != "baseline":
+        raise ExportError(
+            "standard dense Hugging Face export supports only the baseline "
+            "model variant"
+        )
+    if scheduler_state.get("dense_optimizer_variant", "adamw") != "adamw":
+        raise ExportError(
+            "standard dense Hugging Face export supports only the AdamW "
+            "optimizer variant"
+        )
     if checkpoint.binding.architecture != "olmo2":
         raise ExportError("dense Hugging Face export requires an OLMo2 checkpoint")
     try:

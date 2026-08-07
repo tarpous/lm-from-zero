@@ -351,6 +351,8 @@ def pretrain_dense_command(
     compile_model: Annotated[bool, typer.Option()] = True,
     compile_mode: Annotated[str, typer.Option()] = "default",
     adamw_backend: Annotated[str, typer.Option()] = "auto",
+    model_variant: Annotated[str, typer.Option()] = "baseline",
+    optimizer_variant: Annotated[str, typer.Option()] = "adamw",
     loss_backend: Annotated[str, typer.Option()] = "full",
     sdpa_backend: Annotated[str, typer.Option()] = "auto",
     float32_matmul_precision: Annotated[str, typer.Option()] = "highest",
@@ -424,6 +426,8 @@ def pretrain_dense_command(
                 "compile_model": compile_model,
                 "compile_mode": compile_mode,
                 "adamw_backend": adamw_backend,
+                "model_variant": model_variant,
+                "optimizer_variant": optimizer_variant,
                 "loss_backend": loss_backend,
                 "sdpa_backend": sdpa_backend,
                 "float32_matmul_precision": float32_matmul_precision,
@@ -449,7 +453,7 @@ def pretrain_dense_command(
             return
 
         seed_training(training_config.seed, cuda=training_config.device == "cuda")
-        model = Olmo2ForCausalLM(model_config)
+        model = Olmo2ForCausalLM(model_config, variant=training_config.model_variant)
         trainer = DenseTrainer(
             model=model,
             source=source,
@@ -504,6 +508,30 @@ def plan_architecture_study_command(
     )
     if output is not None:
         write_architecture_study_plan(output, plan)
+    typer.echo(plan.canonical_json())
+
+
+@app.command("plan-dense-ablations")
+def plan_dense_ablations_command(
+    architecture_study_plan: Annotated[
+        Path, typer.Argument(exists=True, dir_okay=False)
+    ],
+    output: Annotated[Path | None, typer.Option()] = None,
+    artifact_root: Annotated[Path, typer.Option()] = Path("artifacts/dense-ablations"),
+) -> None:
+    """Freeze the CPU-only M8 dense baseline and seven variant jobs."""
+
+    from lm_from_zero.dense_ablations import (
+        create_dense_ablation_plan,
+        write_dense_ablation_plan,
+    )
+
+    plan = create_dense_ablation_plan(
+        architecture_study_plan,
+        artifact_root=artifact_root,
+    )
+    if output is not None:
+        write_dense_ablation_plan(output, plan)
     typer.echo(plan.canonical_json())
 
 

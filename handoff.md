@@ -1,5 +1,77 @@
 # Session handoff: dense vertical-slice implementation
 
+## Session closeout (August 7, 2026)
+
+The Milestone-8 dense-variant implementation is committed and pushed to
+`origin/main` as `5a35eb8` (`Implement dense ablation variants and Muon
+runner`). Final offline verification passed: 78 files formatted, Ruff checks
+passed, strict mypy passed, and 240 tests plus 34 subtests passed. Git push
+authentication succeeded, but `gh auth status` still reports the configured
+`tarpous` CLI token as invalid; re-authenticate before future GitHub CLI API
+operations. The next execution gates remain the RTX 4080 SUPER bounded variant
+smoke and recovery/rerun of the missing M7 seed-1337 100M screening checkpoint.
+
+## Current update (August 5, 2026, Milestone 7 downstream closeout)
+
+The nine canonical Milestone-7 terminal checkpoints now have fixed-window
+validation records under `artifacts/evaluations/m7-*-v24.jsonl`. Each record
+uses 24 validation batches (192 sequences, 196,608 source tokens) so the
+validation shard is never wrapped or repeated. Dense and Mamba-2 use causal
+loss/perplexity; diffusion records masked-reconstruction loss and its
+variational upper bound and correctly has no causal perplexity field.
+
+All nine checkpoints also have deterministic short native-generation records
+under `artifacts/generations/m7-*.jsonl` for the fixed `Once upon a time`
+prompt. Dense and diffusion exports, plus both screening Mamba-2 exports,
+passed their Hugging Face export contracts under `artifacts/exports/m7-*`.
+The full seed-1337 Mamba-2 export remains intentionally unpublished because
+its existing fp32 parity gate rejected a maximum absolute logit error of
+`2.7298927e-05` against the `1e-05` tolerance; no tolerance was weakened.
+
+The first 32-batch validation attempt was rejected before producing a record
+because it would wrap the finite validation shard. The corrected 24-batch
+window is the canonical downstream evidence. The CPU-only M8 dense-variant
+contract is now generated at `artifacts/dense-ablations/plan.json`. It contains
+24 jobs: the three baseline jobs are represented explicitly; two reuse the M7
+dense screening checkpoints and one requires recovery. The 21 variant jobs
+are marked `execution_status=ready_for_bounded_gpu_smoke`. The model
+variants, hybrid Muon/AdamW partition, runner controls, checkpoint-resume
+layout, and standard export rejection are implemented and CPU-tested.
+`execution_ready` remains false until each variant passes a short RTX 4080
+SUPER numerical/throughput smoke; preserve the canonical M7 model and hashes
+and do not start the 100M-token M8 runs yet.
+
+The regenerated plan verifies the local artifacts instead of trusting path
+strings: seed `1337` is marked `requires_m7_checkpoint_recovery` because its
+step-12,208 screening directory was removed by later checkpoint retention;
+seeds `2027` and `3407` still have reusable screening checkpoints. Do not
+claim the 12.5% M8 baseline reuse until seed 1337 is restored or rerun under
+the identical M7 schedule.
+
+The default dense training configuration was revalidated against the recorded
+M7 seed-1337 event stream: its current canonical hash remains
+`0a8bda0ec01938c571f1aa3b78ccd06ee1193153307da806b5393bd75723cde1`.
+The variant-aware dry-run path was exercised for GELU and hybrid Muon. A
+two-minute CPU execution attempt on the full 20M GELU model did not complete a
+step and produced no checkpoint; use the RTX 4080 SUPER for the required
+bounded smoke rather than treating CPU throughput as evidence.
+
+## Current update (August 5, 2026, local judge selection)
+
+The local judge decision is now fixed to two models and excludes gpt-oss-20b:
+
+- Primary candidate: Qwen3.5-9B through llama.cpp, preferably the pinned
+  Qwen-calibrated imatrix `Q6_K_L` or `Q8_0` GGUF.
+- Independent calibration candidate: official Gemma 4 12B instruction-tuned
+  QAT Q4 GGUF.
+
+The 27B Qwen3.5 variants were rejected as the normal primary judge for the
+RTX 4080 SUPER 16GB target. Standard Q4 files leave insufficient runtime and
+KV-cache headroom; specialized IQ4/KV-cache variants are constrained and are
+not the reproducible default. M12 should compare the two selected models on
+the fixed 100-prompt calibration subset before scoring all 500 prompts. No
+judge weights or new dependencies have been downloaded.
+
 ## Current update (August 5, 2026, Milestone 7 GPU study complete)
 
 The complete nine-lineage architecture study ran at clean revision

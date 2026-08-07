@@ -31,7 +31,12 @@ from lm_from_zero.models.interfaces import (
     MaskedDiffusionOutput,
 )
 from lm_from_zero.models.mamba2 import Mamba2ForCausalLM
-from lm_from_zero.models.olmo2 import Olmo2ForCausalLM
+from lm_from_zero.models.olmo2 import (
+    DenseModelVariant,
+    Olmo2ForCausalLM,
+    dense_variant_forward_flops,
+    dense_variant_parameter_breakdown,
+)
 
 __all__ = [
     "CausalCache",
@@ -39,6 +44,7 @@ __all__ = [
     "CausalLanguageModel",
     "DenseFlopEstimate",
     "DenseKVCache",
+    "DenseModelVariant",
     "DenseParameterBreakdown",
     "DiffusionCorruptionBatch",
     "DiffusionFlopEstimate",
@@ -58,6 +64,8 @@ __all__ = [
     "Olmo2ForCausalLM",
     "base_pretraining_eligible_mask",
     "corrupt_for_diffusion",
+    "dense_variant_forward_flops",
+    "dense_variant_parameter_breakdown",
     "fixed_special_tokens_hash",
     "masked_diffusion_loss",
 ]

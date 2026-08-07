@@ -3,13 +3,40 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal, cast
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from lm_from_zero.models.config import Olmo2Config
+from lm_from_zero.models.config import (
+    DenseFlopEstimate,
+    DenseParameterBreakdown,
+    Olmo2Config,
+)
 from lm_from_zero.models.interfaces import CausalLMOutput, DenseKVCache, LayerKVCache
+
+DenseModelVariant = Literal[
+    "baseline",
+    "learned_absolute_positions",
+    "layer_norm",
+    "gelu",
+    "mha",
+    "without_qk_norm",
+    "tied_embeddings",
+]
+
+_DENSE_MODEL_VARIANTS: frozenset[str] = frozenset(
+    {
+        "baseline",
+        "learned_absolute_positions",
+        "layer_norm",
+        "gelu",
+        "mha",
+        "without_qk_norm",
+        "tied_embeddings",
+    }
+)
 
 
 class RMSNorm(nn.Module):
@@ -26,6 +53,98 @@ class RMSNorm(nn.Module):
         variance = values.square().mean(dim=-1, keepdim=True)
         normalized = values * torch.rsqrt(variance + self.eps)
         return (self.weight * normalized).to(input_dtype)
+
+
+def _validate_dense_model_variant(variant: str) -> None:
+    if variant not in _DENSE_MODEL_VARIANTS:
+        choices = ", ".join(sorted(_DENSE_MODEL_VARIANTS))
+        raise ValueError(
+            f"unsupported dense model variant {variant!r}; choices: {choices}"
+        )
+
+
+def dense_variant_parameter_breakdown(
+    config: Olmo2Config,
+    variant: DenseModelVariant = "baseline",
+) -> DenseParameterBreakdown:
+    """Return exact realized parameter accounting for one dense variant."""
+
+    _validate_dense_model_variant(variant)
+    base = config.parameter_breakdown()
+    attention_delta = 0
+    norm_delta = 0
+    if variant == "mha":
+        attention_delta = config.num_hidden_layers * (
+            2 * config.hidden_size * (config.hidden_size - config.key_value_size)
+        )
+        norm_delta = config.num_hidden_layers * (
+            config.hidden_size - config.key_value_size
+        )
+    elif variant == "without_qk_norm":
+        norm_delta = -config.num_hidden_layers * (
+            config.hidden_size + config.key_value_size
+        )
+    embedding_delta = (
+        config.max_position_embeddings * config.hidden_size
+        if variant == "learned_absolute_positions"
+        else 0
+    )
+    output_delta = -base.output_head if variant == "tied_embeddings" else 0
+    attention = base.attention_projections + attention_delta
+    norms = base.normalization_scales + norm_delta
+    embeddings = base.token_embeddings + embedding_delta
+    output = base.output_head + output_delta
+    total = embeddings + attention + base.mlp_projections + norms + output
+    return base.model_copy(
+        update={
+            "token_embeddings": embeddings,
+            "attention_projections": attention,
+            "normalization_scales": norms,
+            "output_head": output,
+            "total": total,
+        }
+    )
+
+
+def dense_variant_forward_flops(
+    config: Olmo2Config,
+    sequence_length: int,
+    variant: DenseModelVariant = "baseline",
+) -> DenseFlopEstimate:
+    """Return the analytic forward FLOPs for one dense variant."""
+
+    _validate_dense_model_variant(variant)
+    base = config.forward_flops(sequence_length)
+    attention_delta = 0
+    if variant == "mha":
+        attention_delta = (
+            2
+            * config.num_hidden_layers
+            * config.hidden_size
+            * (config.hidden_size - config.key_value_size)
+        )
+    projection = base.projection_flops_per_token + attention_delta
+    return base.model_copy(
+        update={
+            "projection_flops_per_token": projection,
+            "total_flops_per_token": projection + base.attention_flops_per_token,
+        }
+    )
+
+
+def _make_norm(
+    norm_type: type[nn.Module],
+    hidden_size: int,
+    eps: float,
+    *,
+    disabled: bool = False,
+) -> nn.Module:
+    if disabled:
+        return nn.Identity()
+    if norm_type is nn.LayerNorm:
+        # Keep the variant bias-free, like the canonical OLMo2 projections.
+        return nn.LayerNorm(hidden_size, eps=eps, elementwise_affine=True, bias=False)
+    return RMSNorm(hidden_size, eps)
 
 
 def rotate_half(values: Tensor) -> Tensor:
@@ -79,16 +198,46 @@ def apply_rotary_embedding(
 class Olmo2Attention(nn.Module):
     """Bias-free grouped-query attention with flat QK normalization."""
 
-    def __init__(self, config: Olmo2Config) -> None:
+    def __init__(
+        self,
+        config: Olmo2Config,
+        variant: DenseModelVariant = "baseline",
+    ) -> None:
         super().__init__()
+        _validate_dense_model_variant(variant)
         self.config = config
+        self.variant = variant
         self.head_dim = config.head_dim
+        self.num_attention_heads = config.num_attention_heads
+        self.num_key_value_heads = (
+            config.num_attention_heads
+            if variant == "mha"
+            else config.num_key_value_heads
+        )
+        self.key_value_size = self.num_key_value_heads * self.head_dim
         self.q_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.k_proj = nn.Linear(config.hidden_size, config.key_value_size, bias=False)
-        self.v_proj = nn.Linear(config.hidden_size, config.key_value_size, bias=False)
+        self.k_proj = nn.Linear(config.hidden_size, self.key_value_size, bias=False)
+        self.v_proj = nn.Linear(config.hidden_size, self.key_value_size, bias=False)
         self.o_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.q_norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.k_norm = RMSNorm(config.key_value_size, config.rms_norm_eps)
+        norm_type = nn.LayerNorm if variant == "layer_norm" else RMSNorm
+        self.q_norm: RMSNorm = cast(
+            RMSNorm,
+            _make_norm(
+                norm_type,
+                config.hidden_size,
+                config.rms_norm_eps,
+                disabled=variant == "without_qk_norm",
+            ),
+        )
+        self.k_norm: RMSNorm = cast(
+            RMSNorm,
+            _make_norm(
+                norm_type,
+                self.key_value_size,
+                config.rms_norm_eps,
+                disabled=variant == "without_qk_norm",
+            ),
+        )
 
     def _validate_past(
         self,
@@ -99,7 +248,7 @@ class Olmo2Attention(nn.Module):
             return 0
         expected_prefix = (
             batch_size,
-            self.config.num_key_value_heads,
+            self.num_key_value_heads,
         )
         if past.key.ndim != 4 or past.value.ndim != 4:
             raise ValueError("cached keys and values must be rank four")
@@ -144,8 +293,8 @@ class Olmo2Attention(nn.Module):
     def forward(
         self,
         hidden_states: Tensor,
-        cosine: Tensor,
-        sine: Tensor,
+        cosine: Tensor | None,
+        sine: Tensor | None,
         *,
         attention_mask: Tensor | None = None,
         past: LayerKVCache | None = None,
@@ -160,22 +309,25 @@ class Olmo2Attention(nn.Module):
         query = query.view(
             batch_size,
             query_length,
-            self.config.num_attention_heads,
+            self.num_attention_heads,
             self.head_dim,
         ).transpose(1, 2)
         key = key.view(
             batch_size,
             query_length,
-            self.config.num_key_value_heads,
+            self.num_key_value_heads,
             self.head_dim,
         ).transpose(1, 2)
         value = value.view(
             batch_size,
             query_length,
-            self.config.num_key_value_heads,
+            self.num_key_value_heads,
             self.head_dim,
         ).transpose(1, 2)
-        query, key = apply_rotary_embedding(query, key, cosine, sine)
+        if (cosine is None) != (sine is None):
+            raise ValueError("cosine and sine must be provided together")
+        if cosine is not None and sine is not None:
+            query, key = apply_rotary_embedding(query, key, cosine, sine)
 
         if past is not None:
             key = torch.cat((past.key, key), dim=2)
@@ -196,9 +348,7 @@ class Olmo2Attention(nn.Module):
             attn_mask=mask,
             dropout_p=self.config.attention_dropout if self.training else 0.0,
             is_causal=mask is None,
-            enable_gqa=(
-                self.config.num_attention_heads != self.config.num_key_value_heads
-            ),
+            enable_gqa=self.num_attention_heads != self.num_key_value_heads,
         )
         attended = (
             attended.transpose(1, 2)
@@ -232,23 +382,57 @@ class SwiGLU(nn.Module):
         return output
 
 
-class Olmo2DecoderLayer(nn.Module):
-    """Attention and MLP branches with OLMo2 post-branch normalization."""
+class GELUMLP(nn.Module):
+    """Bias-free two-projection GELU feed-forward branch.
+
+    The intermediate width is selected by the caller so the ablation can keep
+    the feed-forward parameter budget close to the canonical three-projection
+    SwiGLU branch.
+    """
 
     def __init__(self, config: Olmo2Config) -> None:
         super().__init__()
-        self.self_attn = Olmo2Attention(config)
-        self.mlp = SwiGLU(config)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.post_feedforward_layernorm = RMSNorm(
-            config.hidden_size, config.rms_norm_eps
+        intermediate_size = (3 * config.intermediate_size) // 2
+        self.up_proj = nn.Linear(config.hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, config.hidden_size, bias=False)
+
+    def forward(self, hidden_states: Tensor) -> Tensor:
+        activated = F.gelu(self.up_proj(hidden_states))
+        output: Tensor = self.down_proj(activated)
+        return output
+
+
+class Olmo2DecoderLayer(nn.Module):
+    """Attention and MLP branches with OLMo2 post-branch normalization."""
+
+    def __init__(
+        self,
+        config: Olmo2Config,
+        variant: DenseModelVariant = "baseline",
+    ) -> None:
+        super().__init__()
+        _validate_dense_model_variant(variant)
+        self.variant = variant
+        self.self_attn = Olmo2Attention(config, variant)
+        # Keep the public branch contract typed as the canonical SwiGLU.  The
+        # GELU ablation exposes the same up/down projection names while
+        # intentionally omitting the gate projection at runtime.
+        self.mlp: SwiGLU = (
+            GELUMLP(config) if variant == "gelu" else SwiGLU(config)  # type: ignore[assignment]
+        )
+        norm_type = nn.LayerNorm if variant == "layer_norm" else RMSNorm
+        self.post_attention_layernorm = _make_norm(
+            norm_type, config.hidden_size, config.rms_norm_eps
+        )
+        self.post_feedforward_layernorm = _make_norm(
+            norm_type, config.hidden_size, config.rms_norm_eps
         )
 
     def forward(
         self,
         hidden_states: Tensor,
-        cosine: Tensor,
-        sine: Tensor,
+        cosine: Tensor | None,
+        sine: Tensor | None,
         *,
         attention_mask: Tensor | None = None,
         past: LayerKVCache | None = None,
@@ -319,21 +503,41 @@ def _linear_causal_loss(
 class Olmo2ForCausalLM(nn.Module):
     """Untied project-owned OLMo2-compatible causal language model."""
 
-    def __init__(self, config: Olmo2Config) -> None:
+    def __init__(
+        self,
+        config: Olmo2Config,
+        *,
+        variant: DenseModelVariant = "baseline",
+    ) -> None:
         super().__init__()
+        _validate_dense_model_variant(variant)
         self.config = config
+        self.variant = variant
         self.embed_tokens = nn.Embedding(
             config.vocab_size,
             config.hidden_size,
             padding_idx=config.pad_token_id,
         )
         self.layers = nn.ModuleList(
-            Olmo2DecoderLayer(config) for _ in range(config.num_hidden_layers)
+            Olmo2DecoderLayer(config, variant) for _ in range(config.num_hidden_layers)
         )
-        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
-        self.rotary_embedding = RotaryEmbedding(config.head_dim, config.rope_theta)
+        self.norm = _make_norm(
+            nn.LayerNorm if variant == "layer_norm" else RMSNorm,
+            config.hidden_size,
+            config.rms_norm_eps,
+        )
+        self.position_embeddings: nn.Embedding | None = None
+        if variant == "learned_absolute_positions":
+            self.position_embeddings = nn.Embedding(
+                config.max_position_embeddings, config.hidden_size
+            )
+            self.rotary_embedding: RotaryEmbedding | None = None
+        else:
+            self.rotary_embedding = RotaryEmbedding(config.head_dim, config.rope_theta)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.apply(self._initialize_module)
+        if variant == "tied_embeddings":
+            self.lm_head.weight = self.embed_tokens.weight
         with torch.no_grad():
             self.embed_tokens.weight[config.pad_token_id].zero_()
 
@@ -346,6 +550,10 @@ class Olmo2ForCausalLM(nn.Module):
             )
         elif isinstance(module, RMSNorm):
             nn.init.ones_(module.weight)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.ones_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def _validate_inputs(
         self,
@@ -432,7 +640,12 @@ class Olmo2ForCausalLM(nn.Module):
             )
 
         hidden_states = self.embed_tokens(input_ids)
-        cosine, sine = self.rotary_embedding(positions)
+        if self.rotary_embedding is None:
+            assert self.position_embeddings is not None
+            hidden_states = hidden_states + self.position_embeddings(positions)
+            cosine = sine = None
+        else:
+            cosine, sine = self.rotary_embedding(positions)
         new_cache: list[LayerKVCache] = []
         for layer_index, layer in enumerate(self.layers):
             layer_past = None if cache is None else cache[layer_index]
