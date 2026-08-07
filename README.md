@@ -622,13 +622,11 @@ research jobs have executable variant controls and are marked
 recovered before execution, so all three baseline seeds now have reusable
 screening checkpoints.
 
-The 21 research jobs have since completed the exact 100M-token scheduler on
-the RTX 4080 SUPER. Their final checkpoints and JSONL streams are retained
-under `artifacts/dense-ablations/` and were audited for checkpoint integrity,
-the step-12,208 / 100,007,936-token boundary, finite terminal metrics, and the
-clean final source revision. They resumed from the validated four-step smoke
-parents, so the lineage retains the smoke parents' dirty-tree provenance; do
-not describe the result as a from-step-zero clean-revision rerun.
+The 21 research jobs have completed the exact 100M-token scheduler from step
+zero on the RTX 4080 SUPER. Their canonical final checkpoints and JSONL streams
+are retained under `artifacts/dense-ablations-clean-20260807/` and were
+audited for checkpoint integrity, the step-12,208 / 100,007,936-token
+boundary, finite terminal metrics, and clean commit `3e5ee58` provenance.
 
 ## Training checkpoints
 

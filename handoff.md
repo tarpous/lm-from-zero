@@ -2,7 +2,7 @@
 
 ## Session closeout (August 7, 2026, M8 execution closeout)
 
-The pushed revision `5e660b7` now includes pinned `tqdm` live progress reporting for
+The pushed revision `3e5ee58` includes pinned `tqdm` live progress reporting for
 long-running training, evaluation, generation, shard, tokenizer, sampling,
 and calibration paths. Machine-readable JSON, JSONL, and Parquet artifacts are
 unchanged. The repository gate passed with 80 formatted files, Ruff, strict
@@ -13,16 +13,15 @@ revision was pushed to `origin/main`.
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
 stream ended at step 4 with finite loss, gradient, throughput, and memory
-metrics. Those smoke checkpoints were produced while the tree was dirty.
+metrics.
 
-The subsequent 21 full jobs resumed from those step-4 checkpoints and reached
-the exact 12,208-optimizer-step / 100,007,936-token boundary. Every final
-checkpoint and event stream passed the read-only audit: all 21 final manifests
-bind clean revision `5e660b7`, all include a `run_complete` event at the exact
-boundary, and every terminal loss, gradient norm, and throughput value is
-finite. Because the runs resumed from dirty step-4 parents, preserve that
-lineage caveat and do not describe them as from-step-zero clean-revision
-reruns.
+The canonical strict replacement then ran all 21 jobs from step zero under
+`artifacts/dense-ablations-clean-20260807/` and reached the exact
+12,208-optimizer-step / 100,007,936-token boundary. Every final checkpoint and
+event stream passed the read-only audit: all 21 final manifests bind clean
+revision `3e5ee58`, all include a step-zero `run_start` and a `run_complete`
+event at the exact boundary, and every terminal loss, gradient norm, and
+throughput value is finite.
 
 The missing M7 dense seed-1337 screening checkpoint was recovered by replaying
 the exact 500M-token scheduler to step 12,208, then copied into the canonical
@@ -53,22 +52,16 @@ its existing fp32 parity gate rejected a maximum absolute logit error of
 The first 32-batch validation attempt was rejected before producing a record
 because it would wrap the finite validation shard. The corrected 24-batch
 window is the canonical downstream evidence. The CPU-only M8 dense-variant
-contract is now generated at `artifacts/dense-ablations/plan.json`. It contains
-24 jobs: the three baseline jobs are represented explicitly; two reuse the M7
-dense screening checkpoints and one requires recovery. The 21 variant jobs
-are marked `execution_status=ready_for_bounded_gpu_smoke`. The model
-variants, hybrid Muon/AdamW partition, runner controls, checkpoint-resume
-layout, and standard export rejection are implemented and CPU-tested.
-`execution_ready` remains false until each variant passes a short RTX 4080
-SUPER numerical/throughput smoke; preserve the canonical M7 model and hashes
-and do not start the 100M-token M8 runs yet.
+contract remains generated at `artifacts/dense-ablations/plan.json`. It
+contains 24 jobs: the three baseline jobs are represented explicitly and all
+21 research variants have executable controls. The model variants, hybrid
+Muon/AdamW partition, runner controls, checkpoint layout, and standard export
+rejection are implemented and CPU-tested. The clean 21-job execution and
+validation are recorded in the August 7 closeout above; `execution_ready`
+remains false as a pre-execution plan-schema value.
 
-The regenerated plan verifies the local artifacts instead of trusting path
-strings: seed `1337` is marked `requires_m7_checkpoint_recovery` because its
-step-12,208 screening directory was removed by later checkpoint retention;
-seeds `2027` and `3407` still have reusable screening checkpoints. Do not
-claim the 12.5% M8 baseline reuse until seed 1337 is restored or rerun under
-the identical M7 schedule.
+All three M7 dense baseline seeds are now reusable, including the restored
+seed-1337 screening checkpoint at step 12,208 under the identical M7 schedule.
 
 The default dense training configuration was revalidated against the recorded
 M7 seed-1337 event stream: its current canonical hash remains
