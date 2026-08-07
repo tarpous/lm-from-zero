@@ -700,9 +700,9 @@ The deterministic native chat check is in
 `reports/zero-20m-sft-generation.json`. The small model produced
 tool-call-shaped continuations for these prompts rather than consistently
 answering them directly, so the training lifecycle is complete while chat
-quality still needs a held-out evaluation. The preference manifest and bounded
-DPO smoke are now complete; the next gate is approval for the long one-epoch
-DPO run.
+quality still needs a held-out evaluation. The preference manifest, bounded DPO
+smoke, and durable full-run runner are now complete; the approved one-epoch
+DPO run is the next execution step.
 
 ## Preference optimization foundation
 
@@ -736,8 +736,11 @@ from the validated SFT checkpoint, and reference log-probabilities were
 computed once. Loss decreased from `0.6931472` to `0.6208477`; gradients were
 finite and preference accuracy reached `1.0` on the second update. Generated
 evidence is `reports/zero-20m-dpo-smoke.json`. The next gated action is
-approval for the long one-epoch DPO run; no long preference-optimization run
-has started.
+The durable `run-dpo` runner is now available. It builds one immutable
+reference-log-probability cache, trains one epoch with atomic checkpoints, and
+writes provenance-bound metrics and a final report under
+`artifacts/post-training/dpo/hybrid-muon-seed-2027/`. The approved one-epoch
+preference-optimization run has not started yet.
 
 ## Training checkpoints
 

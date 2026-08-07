@@ -39,8 +39,11 @@ computed once. Loss decreased from `0.6931472` to `0.6208477`, gradient norms
 were finite (`109.1279` then `93.2850`), and preference accuracy reached `1.0`
 on the second update. Generated evidence is
 `reports/zero-20m-dpo-smoke.json`, including the shared reference-cache
-identity. The next gated action is approval for the long one-epoch DPO run;
-no long preference-optimization run has started.
+identity. The durable `run-dpo` runner is now available. It builds one
+immutable reference-log-probability cache, trains one epoch with atomic
+checkpoints, and writes provenance-bound metrics and a final report under
+`artifacts/post-training/dpo/hybrid-muon-seed-2027/`. Approval has been given;
+the one-epoch preference-optimization run has not started yet.
 
 ## Session closeout (August 7, 2026, M8 execution closeout)
 
@@ -89,9 +92,9 @@ The deterministic native chat check is
 `reports/zero-20m-sft-generation.json`. On three fixed prompts, the 20M model
 mostly emitted tool-call-shaped continuations rather than direct answers. This
 is the first behavior result for the SFT lifecycle; held-out chat evaluation
-is still required before making a quality claim. The preference manifest and
-bounded DPO smoke are now complete; the next gate is approval for the long
-one-epoch DPO run.
+is still required before making a quality claim. The preference manifest,
+bounded DPO smoke, and durable full-run runner are now complete; the approved
+one-epoch DPO run is the next execution step.
 
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
@@ -118,9 +121,9 @@ selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
 `tied_embeddings` as fastest, and recommends the four-variant union for
 downstream evaluation. Fixed-window validation and native generation for that
 union are complete. The full SFT lifecycle now has a completed training run,
-checkpoint, and native generation evidence. The preference manifest and
-bounded DPO smoke are now complete; the next external gate is the long
-one-epoch DPO run.
+checkpoint, and native generation evidence. The preference manifest, bounded
+DPO smoke, and durable full-run runner are now complete; the approved one-epoch
+DPO run is the next execution step.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 

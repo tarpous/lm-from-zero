@@ -136,6 +136,52 @@ def run_dpo_smoke_command(
     typer.echo(report.model_dump_json())
 
 
+@app.command("run-dpo")
+def run_dpo_command(
+    dataset_manifest: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/ultrafeedback-binarized-50k/manifest.json"
+    ),
+    tokenizer: Annotated[Path, typer.Option()] = Path(
+        "artifacts/tokenizers/tinystories-16k/tokenizer.json"
+    ),
+    source_checkpoint: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/sft/hybrid-muon-seed-2027/checkpoints/"
+        "step-000000012500"
+    ),
+    output: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/dpo/hybrid-muon-seed-2027"
+    ),
+    report: Annotated[Path, typer.Option()] = Path(
+        "reports/zero-20m-dpo-hybrid-muon.json"
+    ),
+    batch_size: Annotated[int, typer.Option(min=1)] = 2,
+    bucket_size: Annotated[int, typer.Option(min=1)] = 256,
+    max_length: Annotated[int, typer.Option(min=2)] = 1_024,
+    checkpoint_every_steps: Annotated[int, typer.Option(min=1)] = 1_000,
+) -> None:
+    """Run one complete deterministic CUDA DPO epoch from the final SFT model."""
+
+    from lm_from_zero.post_training.dpo_train import (
+        DPOTrainingConfig,
+        run_dpo_training,
+    )
+
+    result = run_dpo_training(
+        dataset_manifest_path=dataset_manifest,
+        tokenizer_path=tokenizer,
+        source_checkpoint=source_checkpoint,
+        output_directory=output,
+        report_path=report,
+        config=DPOTrainingConfig(
+            batch_size=batch_size,
+            bucket_size=bucket_size,
+            max_length=max_length,
+            checkpoint_every_steps=checkpoint_every_steps,
+        ),
+    )
+    typer.echo(result.model_dump_json())
+
+
 @app.command("run-sft")
 def run_sft_command(
     dataset_manifest: Annotated[Path, typer.Option()] = Path(
