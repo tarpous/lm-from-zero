@@ -15,6 +15,7 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from lm_from_zero.progress import ProgressReporter
 from lm_from_zero.tokenizer.bpe import SPECIAL_TOKEN_IDS, ByteBPE
 
 Split = Literal["train", "validation", "test"]
@@ -284,6 +285,11 @@ def write_token_shards(
     tokens = array("H")
     hashes: list[str] = []
     eos_token_id = SPECIAL_TOKEN_IDS["<|eos|>"]
+    progress = ProgressReporter(f"shard building ({split})")
+    progress.phase(
+        "tokenizing documents",
+        total=len(documents) if documents else None,
+    )
 
     for document_index, document in enumerate(documents):
         document_tokens = [*tokenizer.encode_bytes(document.data), eos_token_id]
@@ -310,6 +316,7 @@ def write_token_shards(
             hashes = []
         tokens.extend(document_tokens)
         hashes.append(document.content_hash)
+        progress.update(document_index + 1, fields={"shards": len(manifests)})
 
     if tokens:
         manifests.append(
@@ -326,6 +333,7 @@ def write_token_shards(
                 next_document_index=len(documents),
             )
         )
+    progress.finish("complete")
     return tuple(manifests)
 
 

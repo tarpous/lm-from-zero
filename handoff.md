@@ -1,15 +1,28 @@
 # Session handoff: dense vertical-slice implementation
 
-## Session closeout (August 7, 2026)
+## Session closeout (August 7, 2026, progress revision)
 
-The Milestone-8 dense-variant implementation is committed and pushed to
-`origin/main` as `5a35eb8` (`Implement dense ablation variants and Muon
-runner`). Final offline verification passed: 78 files formatted, Ruff checks
-passed, strict mypy passed, and 240 tests plus 34 subtests passed. Git push
-authentication succeeded, but `gh auth status` still reports the configured
-`tarpous` CLI token as invalid; re-authenticate before future GitHub CLI API
-operations. The next execution gates remain the RTX 4080 SUPER bounded variant
-smoke and recovery/rerun of the missing M7 seed-1337 100M screening checkpoint.
+The local revision now includes pinned `tqdm` live progress reporting for
+long-running training, evaluation, generation, shard, tokenizer, sampling,
+and calibration paths. Machine-readable JSON, JSONL, and Parquet artifacts are
+unchanged. The repository gate passed with 80 formatted files, Ruff, strict
+mypy, and 245 tests; total branch coverage is 85.10%. This revision is local
+only and has not been pushed.
+
+The M8 bounded GPU smoke is complete for all 21 variant jobs. Every step-4
+checkpoint passed structural and cryptographic validation, and every JSONL
+stream ended at step 4 with finite loss, gradient, throughput, and memory
+metrics. These are bounded smoke evidence, not the planned 100M-token results;
+the artifacts were produced while the tree was dirty and must not be treated
+as clean-revision scientific evidence.
+
+The missing M7 dense seed-1337 screening checkpoint was recovered by replaying
+the exact 500M-token scheduler to step 12,208, then copied into the canonical
+`artifacts/architecture-study/dense/seed-1337/checkpoints/step-000000012208`
+directory and validated. The regenerated M8 plan now marks all three dense
+baseline seeds as `reuse_m7_screening`; its `execution_ready` flag remains
+false by contract. The next gate is explicit approval for the 21 full
+100M-token variant runs on the RTX 4080 SUPER.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 

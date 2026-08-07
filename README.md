@@ -93,6 +93,23 @@ PYTHONPATH=src uv run --frozen pytest
 
 Pytest enforces branch coverage of at least 85%.
 
+## Live progress
+
+Long-running training, evaluation, generation, shard, and calibration loops
+show a `tqdm` progress bar on interactive stderr. The bar reports the current
+phase, completed work, elapsed time, rate, ETA, and phase-specific metrics such
+as loss, tokens per second, checkpointing, or CUDA compilation. Machine-readable
+JSON output and canonical JSONL logs remain unchanged.
+
+Progress is enabled automatically in an interactive terminal. Force it when a
+wrapper does not expose a TTY with:
+
+```bash
+LM_FROM_ZERO_PROGRESS=1 PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli <command>
+```
+
+Disable it with `LM_FROM_ZERO_PROGRESS=0`.
+
 ## Dependency-free fallback
 
 The standard-library suite remains available when dependencies are not synced:

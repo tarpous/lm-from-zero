@@ -21,6 +21,7 @@ from lm_from_zero.models import (
     base_pretraining_eligible_mask,
     corrupt_for_diffusion,
 )
+from lm_from_zero.progress import ProgressReporter
 from lm_from_zero.training.data import BatchCursor, ShardBatchSource
 
 DeviceKind = Literal["cpu", "cuda"]
@@ -148,9 +149,16 @@ def evaluate_diffusion(
     model_forwards = 0
     current = before
     started = clock()
+    progress = ProgressReporter("diffusion evaluation")
+    progress.phase(
+        "evaluating",
+        total=config.max_batches * config.corruption_samples_per_batch,
+    )
+    completed_work = 0
+    completed = False
     try:
         with torch.no_grad():
-            for _ in range(config.max_batches):
+            for batch_index in range(config.max_batches):
                 batch = source.next_batch(current)
                 current = batch.cursor_after
                 original = batch.input_ids.to(device)
@@ -165,7 +173,7 @@ def evaluate_diffusion(
                     raise DiffusionEvaluationError(
                         "every evaluation sequence must contain an eligible token"
                     )
-                for _ in range(config.corruption_samples_per_batch):
+                for sample_index in range(config.corruption_samples_per_batch):
                     corrupted = corrupt_for_diffusion(
                         original,
                         eligible,
@@ -208,37 +216,50 @@ def evaluate_diffusion(
                     masked_tokens += count
                     evaluated_examples += batch_size
                     model_forwards += 1
+                    completed_work += 1
+                    progress.update(
+                        completed_work,
+                        fields={
+                            "batch": f"{batch_index + 1}/{config.max_batches}",
+                            "sample": sample_index + 1,
+                            "loss": float(loss.float()),
+                            "forwards": model_forwards,
+                        },
+                    )
+        elapsed = clock() - started
+        if elapsed <= 0:
+            raise DiffusionEvaluationError("evaluation clock did not advance")
+        source_sequence_count = config.max_batches * source.config.micro_batch_size
+        result = DiffusionEvaluationResult(
+            evaluated_at_utc=datetime.now(UTC),
+            source_checkpoint_id=source_checkpoint_id,
+            source_checkpoint_manifest_sha256=source_checkpoint_manifest_sha256,
+            device=config.device,
+            split=source.config.split,
+            model_config_sha256=model.config.config_hash,
+            shard_manifest_sha256=source.build_manifest_sha256,
+            tokenizer_sha256=source.build.tokenizer_hash,
+            seed=config.seed,
+            batch_count=config.max_batches,
+            source_sequence_count=source_sequence_count,
+            corruption_samples_per_batch=config.corruption_samples_per_batch,
+            evaluated_example_count=evaluated_examples,
+            model_forwards=model_forwards,
+            eligible_token_count=eligible_tokens,
+            masked_token_count=masked_tokens,
+            mean_mask_rate=masked_tokens / eligible_tokens,
+            masked_reconstruction_loss_nats=total_reconstruction_nll / masked_tokens,
+            variational_upper_bound_nats=(total_variational_bound / evaluated_examples),
+            elapsed_seconds=elapsed,
+            masked_tokens_per_second=masked_tokens / elapsed,
+            cursor_before=before,
+            cursor_after=current,
+        )
+        completed = True
+        return result
     finally:
         model.train(was_training)
-    elapsed = clock() - started
-    if elapsed <= 0:
-        raise DiffusionEvaluationError("evaluation clock did not advance")
-    source_sequence_count = config.max_batches * source.config.micro_batch_size
-    return DiffusionEvaluationResult(
-        evaluated_at_utc=datetime.now(UTC),
-        source_checkpoint_id=source_checkpoint_id,
-        source_checkpoint_manifest_sha256=source_checkpoint_manifest_sha256,
-        device=config.device,
-        split=source.config.split,
-        model_config_sha256=model.config.config_hash,
-        shard_manifest_sha256=source.build_manifest_sha256,
-        tokenizer_sha256=source.build.tokenizer_hash,
-        seed=config.seed,
-        batch_count=config.max_batches,
-        source_sequence_count=source_sequence_count,
-        corruption_samples_per_batch=config.corruption_samples_per_batch,
-        evaluated_example_count=evaluated_examples,
-        model_forwards=model_forwards,
-        eligible_token_count=eligible_tokens,
-        masked_token_count=masked_tokens,
-        mean_mask_rate=masked_tokens / eligible_tokens,
-        masked_reconstruction_loss_nats=total_reconstruction_nll / masked_tokens,
-        variational_upper_bound_nats=(total_variational_bound / evaluated_examples),
-        elapsed_seconds=elapsed,
-        masked_tokens_per_second=masked_tokens / elapsed,
-        cursor_before=before,
-        cursor_after=current,
-    )
+        progress.finish("complete" if completed else "failed")
 
 
 def append_diffusion_evaluation_result(

@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor
 
 from lm_from_zero.models import Mamba2ForCausalLM, Olmo2ForCausalLM
+from lm_from_zero.progress import ProgressReporter
 
 DEFAULT_SUPPRESSED_TOKEN_IDS = (0, 3, 4, 5, 7)
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -273,6 +274,9 @@ def generate_causal(
     cache = None
     was_training = model.training
     started = perf_counter()
+    progress = ProgressReporter("causal generation")
+    progress.phase("generating", total=config.max_new_tokens)
+    completed = False
     try:
         model.eval()
         with torch.no_grad():
@@ -310,6 +314,13 @@ def generate_causal(
                 )
                 if on_token is not None:
                     on_token(event)
+                progress.update(
+                    step,
+                    fields={
+                        "forwards": model_forwards,
+                        "generated_tokens": sum(map(len, generated)),
+                    },
+                )
                 if bool(torch.all(finished)) or step == config.max_new_tokens:
                     break
                 input_ids = torch.where(
@@ -321,8 +332,10 @@ def generate_causal(
                     (attention_mask, active.to(dtype=torch.long).unsqueeze(1)),
                     dim=1,
                 )
+        completed = True
     finally:
         model.train(was_training)
+        progress.finish("complete" if completed else "failed")
 
     elapsed = perf_counter() - started
     generated_count = sum(map(len, generated))

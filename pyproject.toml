@@ -14,6 +14,7 @@ dependencies = [
     "tensorboard==2.21.0",
     "tokenizers==0.22.2",
     "torch==2.13.0",
+    "tqdm==4.69.0",
     "transformers==5.14.1",
     "typer==0.27.0",
 ]

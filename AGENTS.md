@@ -68,6 +68,11 @@ commands, the dense-model configuration summary, and the focused checkpoint,
 runner, evaluation, Hugging Face export, and native generation test commands.
 The pretraining command prints a dry-run plan unless `--execute` is explicitly
 supplied.
+
+Interactive long-running commands use the pinned `tqdm` dependency for live
+phase/step progress on stderr. Set `LM_FROM_ZERO_PROGRESS=1` to force the bar
+when a wrapper does not provide a TTY, or `LM_FROM_ZERO_PROGRESS=0` to disable
+it. Progress output never replaces canonical JSON, JSONL, or Parquet artifacts.
 Milestone 6A calibration begins with the CPU-only
 `plan-acceleration-calibration` command from a clean committed revision. Its
 instrumented per-cell CUDA executor and all measurement artifacts remain

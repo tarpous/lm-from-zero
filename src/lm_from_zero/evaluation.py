@@ -17,6 +17,7 @@ from torch import Tensor
 
 from lm_from_zero.data import Split
 from lm_from_zero.models import Mamba2ForCausalLM, Olmo2ForCausalLM
+from lm_from_zero.progress import ProgressReporter
 from lm_from_zero.training.data import BatchCursor, ShardBatchSource
 
 DeviceKind = Literal["cpu", "cuda"]
@@ -113,9 +114,12 @@ def evaluate_causal_loss(
     predicted_tokens = 0
     current = before
     started = clock()
+    progress = ProgressReporter("causal evaluation")
+    progress.phase("evaluating", total=config.max_batches)
+    completed = False
     try:
         with torch.no_grad():
-            for _ in range(config.max_batches):
+            for batch_index in range(config.max_batches):
                 batch = source.next_batch(current)
                 current = batch.cursor_after
                 input_ids = batch.input_ids.to(device)
@@ -131,33 +135,43 @@ def evaluate_causal_loss(
                     raise EvaluationError("evaluation batch has no finite loss")
                 total_negative_log_likelihood += float(loss.float()) * count
                 predicted_tokens += count
+                progress.update(
+                    batch_index + 1,
+                    fields={
+                        "loss": float(loss.float()),
+                        "predicted_tokens": predicted_tokens,
+                    },
+                )
+        elapsed = clock() - started
+        if elapsed <= 0:
+            raise EvaluationError("evaluation clock did not advance")
+        mean_loss = total_negative_log_likelihood / predicted_tokens
+        try:
+            perplexity = math.exp(mean_loss)
+        except OverflowError as error:
+            raise EvaluationError("evaluation perplexity overflowed") from error
+        sequence_count = config.max_batches * source.config.micro_batch_size
+        result = CausalEvaluationResult(
+            evaluated_at_utc=datetime.now(UTC),
+            split=source.config.split,
+            model_config_sha256=model.config.config_hash,
+            shard_manifest_sha256=source.build_manifest_sha256,
+            tokenizer_sha256=source.build.tokenizer_hash,
+            batch_count=config.max_batches,
+            sequence_count=sequence_count,
+            predicted_token_count=predicted_tokens,
+            mean_loss=mean_loss,
+            perplexity=perplexity,
+            elapsed_seconds=elapsed,
+            predicted_tokens_per_second=predicted_tokens / elapsed,
+            cursor_before=before,
+            cursor_after=current,
+        )
+        completed = True
+        return result
     finally:
         model.train(was_training)
-    elapsed = clock() - started
-    if elapsed <= 0:
-        raise EvaluationError("evaluation clock did not advance")
-    mean_loss = total_negative_log_likelihood / predicted_tokens
-    try:
-        perplexity = math.exp(mean_loss)
-    except OverflowError as error:
-        raise EvaluationError("evaluation perplexity overflowed") from error
-    sequence_count = config.max_batches * source.config.micro_batch_size
-    return CausalEvaluationResult(
-        evaluated_at_utc=datetime.now(UTC),
-        split=source.config.split,
-        model_config_sha256=model.config.config_hash,
-        shard_manifest_sha256=source.build_manifest_sha256,
-        tokenizer_sha256=source.build.tokenizer_hash,
-        batch_count=config.max_batches,
-        sequence_count=sequence_count,
-        predicted_token_count=predicted_tokens,
-        mean_loss=mean_loss,
-        perplexity=perplexity,
-        elapsed_seconds=elapsed,
-        predicted_tokens_per_second=predicted_tokens / elapsed,
-        cursor_before=before,
-        cursor_after=current,
-    )
+        progress.finish("complete" if completed else "failed")
 
 
 def append_evaluation_result(path: str | Path, result: CausalEvaluationResult) -> None:

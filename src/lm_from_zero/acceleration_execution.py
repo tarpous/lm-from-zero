@@ -47,6 +47,7 @@ from lm_from_zero.models import (
     Olmo2Config,
     Olmo2ForCausalLM,
 )
+from lm_from_zero.progress import ProgressReporter
 from lm_from_zero.sharding import validate_shard_build
 from lm_from_zero.tokenizer.bpe import ByteBPE
 from lm_from_zero.training import (
@@ -625,6 +626,11 @@ def _execute_preflighted_calibration(
         repository=repository,
         jsonl_log=_resolved_path(dry_run.jsonl_log, repository),
     )
+    progress = ProgressReporter(
+        f"calibration {cell.architecture}/{cell.cell_id}",
+        enabled=trainer.distributed.is_primary,
+    )
+    progress.phase("warm-up", total=plan.warmup_optimizer_steps)
     cursor = source.initial_cursor()
     partition = partition_parameters(trainer.model)
     parity_snapshot = snapshot_parameter_groups(partition)
@@ -662,6 +668,7 @@ def _execute_preflighted_calibration(
                 cold_compiled_step_seconds = step_seconds
             if step == 2 and config.compile_model:
                 warm_compiled_step_seconds = step_seconds
+        progress.update(step + 1)
 
     parity_measurements = resolve_parameter_group_measurements(parity_snapshot)
     numerical_trace = CalibrationNumericalTrace(
@@ -707,6 +714,7 @@ def _execute_preflighted_calibration(
     telemetry_started = started_cpu.wall_seconds
     telemetry_window_steps = 0
     try:
+        progress.phase("measured training", total=plan.measured_optimizer_steps)
         for offset in range(plan.measured_optimizer_steps):
             data_started = time.perf_counter()
             batches, cursor = _next_batches(
@@ -737,6 +745,7 @@ def _execute_preflighted_calibration(
                 sinks.log_optimizer_step(metrics.model_dump(mode="json"))
                 telemetry_started = time.perf_counter()
                 telemetry_window_steps = 0
+            progress.update(offset + 1)
         cuda_timing = timer.resolve(reset=True)
         sinks.durable_sync()
         ended_cpu = capture_process_cpu_times()
@@ -751,11 +760,13 @@ def _execute_preflighted_calibration(
     parameter_groups = resolve_parameter_group_measurements(measurement_snapshot)
     graph_breaks = read_compile_graph_break_counters()
     evaluation_batch = _evaluation_batch(build_manifest, config)
+    progress.phase("evaluation")
     evaluation_seconds = _evaluate_once(trainer, config, evaluation_batch)
     observed_sdpa_backend = _profile_sdpa(trainer, config, evaluation_batch)
 
     sinks.durable_sync()
     checkpoint_started = time.perf_counter()
+    progress.phase("publishing checkpoint")
     checkpoint = trainer._save(
         optimizer_step=config.optimization.total_steps,
         cursor=cursor,
@@ -831,6 +842,7 @@ def _execute_preflighted_calibration(
         maximum_update_absolute_delta=update_delta,
     )
     write_artifact(result_path, result)
+    progress.finish("complete")
     return result
 
 

@@ -10,6 +10,7 @@ from heapq import heapify, heappop, heappush
 from itertools import pairwise
 from time import perf_counter
 
+from lm_from_zero.progress import ProgressReporter
 from lm_from_zero.tokenizer.bpe import (
     BYTE_TO_TOKEN_ID,
     INITIAL_VOCAB_SIZE,
@@ -177,12 +178,21 @@ def train_bpe(
     ByteBPE(merges=tuple(initial_merges), pretokenizer=pretokenizer)
 
     started = perf_counter()
+    progress = ProgressReporter("tokenizer training")
+    progress.phase("counting corpus")
     frequencies, corpus_hash, document_count, corpus_bytes = _segment_frequencies(
         documents, pretokenizer
     )
     trainer = _IndexedTrainer(frequencies)
     trainer.replay(initial_merges)
     merges = list(initial_merges)
+    merge_total = target_vocab_size - INITIAL_VOCAB_SIZE
+    progress.phase(
+        "merging vocabulary",
+        total=merge_total if merge_total > 0 else None,
+        current=len(merges),
+        fields={"min_frequency": min_frequency},
+    )
 
     while INITIAL_VOCAB_SIZE + len(merges) < target_vocab_size:
         selected = trainer.best_pair()
@@ -193,6 +203,7 @@ def train_bpe(
             break
         trainer.merge(pair, INITIAL_VOCAB_SIZE + len(merges))
         merges.append(pair)
+        progress.update(len(merges), fields={"pair_frequency": frequency})
         if on_merge is not None:
             on_merge(tuple(merges), frequency)
 
@@ -207,4 +218,5 @@ def train_bpe(
         final_merge_count=len(merges),
         elapsed_seconds=perf_counter() - started,
     )
+    progress.finish("complete")
     return BPETrainingResult(tokenizer=tokenizer, stats=stats)

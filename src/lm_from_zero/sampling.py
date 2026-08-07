@@ -13,6 +13,7 @@ from datasets import load_dataset  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from lm_from_zero.data import DataValidationError
+from lm_from_zero.progress import ProgressReporter
 
 TINYSTORIES_DATASET_ID = "roneneldan/TinyStories"
 TINYSTORIES_REVISION = "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64"
@@ -164,6 +165,8 @@ def sample_text_records(
     rows_scanned = 0
     duplicate_rows = 0
     empty_rows = 0
+    progress = ProgressReporter("sample building")
+    progress.phase("scanning source", fields={"target_bytes": config.target_text_bytes})
 
     try:
         with (
@@ -172,6 +175,13 @@ def sample_text_records(
         ):
             for source_index, record in enumerate(records):
                 rows_scanned = source_index + 1
+                progress.update(
+                    rows_scanned,
+                    fields={
+                        "documents": document_count,
+                        "bytes": actual_text_bytes,
+                    },
+                )
                 raw_text = record.get(config.text_field)
                 if not isinstance(raw_text, str):
                     raise DataValidationError(
@@ -247,8 +257,10 @@ def sample_text_records(
         sample_partial.replace(sample_path)
         hashes_partial.replace(hashes_path)
         _atomic_json(manifest_path, manifest.model_dump(mode="json"))
+        progress.finish("complete")
         return manifest_path
     except Exception:
+        progress.finish("failed")
         sample_partial.unlink(missing_ok=True)
         hashes_partial.unlink(missing_ok=True)
         raise

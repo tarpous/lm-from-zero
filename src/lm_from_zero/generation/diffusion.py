@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from torch import Tensor
 
 from lm_from_zero.models import MaskedDiffusionForMaskedLM
+from lm_from_zero.progress import ProgressReporter
 
 DEFAULT_SUPPRESSED_TOKEN_IDS = (0, 1, 3, 4, 5, 6, 7)
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -344,6 +345,9 @@ def generate_diffusion(
     was_training = model.training
     model_forwards = 0
     started = perf_counter()
+    progress = ProgressReporter("diffusion generation")
+    progress.phase("denoising", total=config.resolved_steps)
+    completed = False
     try:
         model.eval()
         with torch.no_grad():
@@ -430,8 +434,17 @@ def generate_diffusion(
                             remaining_masks=tuple(remaining),
                         )
                     )
+                progress.update(
+                    step,
+                    fields={
+                        "forwards": model_forwards,
+                        "remaining_masks": sum(remaining),
+                    },
+                )
+        completed = True
     finally:
         model.train(was_training)
+        progress.finish("complete" if completed else "failed")
 
     if torch.any(response_mask & (canvas == model.config.mask_token_id)):
         raise DiffusionGenerationError("denoising terminated with masked tokens")

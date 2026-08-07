@@ -32,6 +32,7 @@ from lm_from_zero.models import (
     dense_variant_forward_flops,
     dense_variant_parameter_breakdown,
 )
+from lm_from_zero.progress import ProgressReporter
 from lm_from_zero.training.checkpointing import (
     CheckpointBinding,
     CheckpointCadence,
@@ -1029,34 +1030,51 @@ class CausalTrainer:
             raise TrainingRunError(
                 "CUDA training was requested but CUDA is unavailable"
             )
+        label = f"{config.model.architecture} training"
+        if isinstance(config, DenseTrainingConfig) and (
+            config.model_variant != "baseline" or config.optimizer_variant != "adamw"
+        ):
+            label += f" ({config.model_variant}/{config.optimizer_variant})"
+        self.progress = ProgressReporter(label, enabled=self.distributed.is_primary)
+        self.progress.phase("initializing")
         torch.set_float32_matmul_precision(config.float32_matmul_precision)
         device = self.distributed.torch_device(config.device)
-        self.model = model.to(device)
-        compiled_model: nn.Module = (
-            cast(
-                nn.Module,
-                torch.compile(
-                    self.model,
-                    mode=config.compile_mode,
-                    dynamic=False,
-                ),
+        try:
+            self.model = model.to(device)
+            if config.compile_model:
+                self.progress.phase(
+                    "compiling model",
+                    fields={"mode": config.compile_mode},
+                )
+                compiled_model = cast(
+                    nn.Module,
+                    torch.compile(
+                        self.model,
+                        mode=config.compile_mode,
+                        dynamic=False,
+                    ),
+                )
+            else:
+                compiled_model = self.model
+            self.progress.phase("building optimizer")
+            self.forward_model = (
+                DistributedDataParallel(
+                    compiled_model,
+                    device_ids=(
+                        [self.distributed.local_rank]
+                        if config.device == "cuda"
+                        else None
+                    ),
+                    output_device=(
+                        self.distributed.local_rank if config.device == "cuda" else None
+                    ),
+                )
+                if self.distributed.enabled
+                else compiled_model
             )
-            if config.compile_model
-            else self.model
-        )
-        self.forward_model = (
-            DistributedDataParallel(
-                compiled_model,
-                device_ids=(
-                    [self.distributed.local_rank] if config.device == "cuda" else None
-                ),
-                output_device=(
-                    self.distributed.local_rank if config.device == "cuda" else None
-                ),
-            )
-            if self.distributed.enabled
-            else compiled_model
-        )
+        except BaseException:
+            self.progress.finish("failed")
+            raise
         self.source = source
         self.config = config
         self.objective = training_objective(config)
@@ -1091,6 +1109,7 @@ class CausalTrainer:
             world_size=config.batch.world_size,
             repository=repository,
         )
+        self.progress.phase("ready")
 
     def _base_scheduler_state(self, optimizer_step: int) -> dict[str, Any]:
         state: dict[str, Any] = {
@@ -1292,6 +1311,7 @@ class CausalTrainer:
                 sinks=sinks,
             )
         except BaseException:
+            self.progress.finish("failed")
             if sinks is not None:
                 sinks.abort()
             raise
@@ -1342,6 +1362,15 @@ class CausalTrainer:
             last_saved_step=optimizer_step if parent is not None else None,
         )
         metrics: list[OptimizerStepMetrics] = []
+        self.progress.phase(
+            "training",
+            total=target_step,
+            current=optimizer_step,
+            fields={
+                "scheduled_steps": self.config.optimization.total_steps,
+                "tokens": optimizer_step * self.config.tokens_per_optimizer_step,
+            },
+        )
         measurement_started = time.perf_counter()
         measurement_steps = 0
         self.forward_model.train()
@@ -1381,12 +1410,22 @@ class CausalTrainer:
                 reset_peak_memory=measurement_steps == 1,
             )
             optimizer_step += 1
+            progress_fields: dict[str, object] = {
+                "tokens": optimizer_step * self.config.tokens_per_optimizer_step,
+            }
             if step_metrics is not None:
                 metrics.append(step_metrics)
+                progress_fields.update(
+                    {
+                        "loss": step_metrics.loss,
+                        "tokens/s": step_metrics.tokens_per_second,
+                    }
+                )
                 if sinks is not None:
                     sinks.log_optimizer_step(step_metrics.model_dump(mode="json"))
                 measurement_started = time.perf_counter()
                 measurement_steps = 0
+            self.progress.update(optimizer_step, fields=progress_fields)
             now = time.monotonic()
             primary_reasons = (
                 sorted(cadence.due_reasons(optimizer_step, now))
@@ -1398,6 +1437,10 @@ class CausalTrainer:
                 self.distributed.broadcast_primary_object(primary_reasons),
             )
             if reasons and step_metrics is not None:
+                self.progress.phase(
+                    "checkpointing",
+                    fields={"step": optimizer_step, "reason": "+".join(reasons)},
+                )
                 self._durable_metrics_before_checkpoint(sinks)
                 parent = self._save(
                     optimizer_step=optimizer_step,
@@ -1415,7 +1458,21 @@ class CausalTrainer:
                         },
                     )
                     sinks.snapshot()
+                self.progress.phase(
+                    "training",
+                    total=target_step,
+                    current=optimizer_step,
+                    fields={
+                        "scheduled_steps": self.config.optimization.total_steps,
+                        "tokens": optimizer_step
+                        * self.config.tokens_per_optimizer_step,
+                    },
+                )
 
+        self.progress.phase(
+            "finalizing checkpoint",
+            fields={"step": optimizer_step},
+        )
         self._durable_metrics_before_checkpoint(sinks)
         if cadence.last_saved_step != optimizer_step:
             parent = self._save(
@@ -1440,6 +1497,7 @@ class CausalTrainer:
                 },
             )
             sinks.close()
+        self.progress.finish("complete")
         return DenseTrainingResult(
             optimizer_step=optimizer_step,
             cursor=cursor,
