@@ -805,15 +805,6 @@ def run_dpo_training(
         raise DPOTrainingError("DPO context exceeds the prepared preference context")
 
     source_checkpoint_path = Path(source_checkpoint)
-    source_manifest = validate_checkpoint(source_checkpoint_path)
-    if source_manifest.binding.architecture != "olmo2":
-        raise DPOTrainingError("full DPO requires an OLMo2 source checkpoint")
-    model_config = Olmo2Config.model_validate(
-        source_manifest.binding.resolved_model_config
-    )
-    if training_config.max_length > model_config.max_position_embeddings:
-        raise DPOTrainingError("DPO context exceeds the source model context")
-    model_variant: DenseModelVariant
     checkpoint_manifest_path = source_checkpoint_path / "manifest.json"
     checkpoint_hash = _sha256_file(checkpoint_manifest_path)
     try:
@@ -824,6 +815,18 @@ def run_dpo_training(
         )
     except (OSError, ValueError) as error:
         raise DPOTrainingError("SFT run manifest is invalid") from error
+    pretraining_checkpoint = Path(sft_run_manifest.source_checkpoint_directory)
+    if not pretraining_checkpoint.is_absolute():
+        pretraining_checkpoint = Path.cwd() / pretraining_checkpoint
+    source_manifest = validate_checkpoint(pretraining_checkpoint)
+    if source_manifest.binding.architecture != "olmo2":
+        raise DPOTrainingError("full DPO requires an OLMo2 source checkpoint")
+    model_config = Olmo2Config.model_validate(
+        source_manifest.binding.resolved_model_config
+    )
+    if training_config.max_length > model_config.max_position_embeddings:
+        raise DPOTrainingError("DPO context exceeds the source model context")
+    model_variant: DenseModelVariant
     model_variant = sft_run_manifest.model_variant
     model = Olmo2ForCausalLM(model_config, variant=model_variant)
     sft_checkpoint, _validated_sft_run_manifest, checkpoint_hash, _ = _load_sft_run(

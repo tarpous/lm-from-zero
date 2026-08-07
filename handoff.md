@@ -1,6 +1,6 @@
 # Session handoff: dense vertical-slice implementation
 
-## Current update (August 7, 2026, DPO foundation)
+## Current update (August 7, 2026, DPO completed)
 
 The completed hybrid-Muon SFT milestone is published on `origin/main` at
 `a688778a0a6c08d2931c175bdad2f513483bfdfc`. The offline verification gate
@@ -39,11 +39,20 @@ computed once. Loss decreased from `0.6931472` to `0.6208477`, gradient norms
 were finite (`109.1279` then `93.2850`), and preference accuracy reached `1.0`
 on the second update. Generated evidence is
 `reports/zero-20m-dpo-smoke.json`, including the shared reference-cache
-identity. The durable `run-dpo` runner is now available. It builds one
-immutable reference-log-probability cache, trains one epoch with atomic
-checkpoints, and writes provenance-bound metrics and a final report under
-`artifacts/post-training/dpo/hybrid-muon-seed-2027/`. Approval has been given;
-the one-epoch preference-optimization run has not started yet.
+identity. The durable `run-dpo` runner then completed the approved one-epoch
+run on the RTX 4080 SUPER with bf16, batch size 2, and maximum length 1,024.
+It consumed all 50,000 pairs in 25,000 optimizer steps in 3,600.7 seconds,
+published one immutable reference cache and 25 atomic checkpoints, and wrote
+the final artifacts under
+`artifacts/post-training/dpo/hybrid-muon-seed-2027-long/`. Loss moved from
+`0.6931472` on the first update to `0.3874257` on the final update; the mean
+loss over the last 100 updates was `0.7263714`. The logged mean per-batch
+preference accuracy was `0.6313`, and all losses and gradient norms were
+finite. The final checkpoint is `step-000000025000`, with manifest hash
+`04115ea42c8821dc7793b6fb612c7408545ac18e345fbe149feb01f3a168ad27`.
+Generated evidence is
+`reports/zero-20m-dpo-hybrid-muon-long.json`; the reference-cache SHA-256 is
+`0982ad5ccc81c69b54eec9c884be48a1a82f6ba765f18c59c7b23272b9c3ab7b`.
 
 ## Session closeout (August 7, 2026, M8 execution closeout)
 
@@ -93,8 +102,9 @@ The deterministic native chat check is
 mostly emitted tool-call-shaped continuations rather than direct answers. This
 is the first behavior result for the SFT lifecycle; held-out chat evaluation
 is still required before making a quality claim. The preference manifest,
-bounded DPO smoke, and durable full-run runner are now complete; the approved
-one-epoch DPO run is the next execution step.
+bounded DPO smoke, durable full-run runner, and approved one-epoch DPO run are
+now complete; held-out preference evaluation and downstream behavior analysis
+are the next steps.
 
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
@@ -122,8 +132,9 @@ selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
 downstream evaluation. Fixed-window validation and native generation for that
 union are complete. The full SFT lifecycle now has a completed training run,
 checkpoint, and native generation evidence. The preference manifest, bounded
-DPO smoke, and durable full-run runner are now complete; the approved one-epoch
-DPO run is the next execution step.
+DPO smoke, durable full-run runner, and approved one-epoch DPO run are now
+complete; held-out preference evaluation and downstream behavior analysis are
+the next steps.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 

@@ -701,10 +701,11 @@ The deterministic native chat check is in
 tool-call-shaped continuations for these prompts rather than consistently
 answering them directly, so the training lifecycle is complete while chat
 quality still needs a held-out evaluation. The preference manifest, bounded DPO
-smoke, and durable full-run runner are now complete; the approved one-epoch
-DPO run is the next execution step.
+smoke, durable full-run runner, and approved one-epoch DPO run are now
+complete; held-out preference evaluation and downstream behavior analysis are
+the next steps.
 
-## Preference optimization foundation
+## Preference optimization
 
 The project-owned DPO foundation is now available in
 `lm_from_zero.post_training.dpo`. It validates canonical preference pairs with
@@ -735,12 +736,17 @@ hybrid-Muon SFT checkpoint. Both policy and frozen-reference models loaded
 from the validated SFT checkpoint, and reference log-probabilities were
 computed once. Loss decreased from `0.6931472` to `0.6208477`; gradients were
 finite and preference accuracy reached `1.0` on the second update. Generated
-evidence is `reports/zero-20m-dpo-smoke.json`. The next gated action is
-The durable `run-dpo` runner is now available. It builds one immutable
-reference-log-probability cache, trains one epoch with atomic checkpoints, and
-writes provenance-bound metrics and a final report under
-`artifacts/post-training/dpo/hybrid-muon-seed-2027/`. The approved one-epoch
-preference-optimization run has not started yet.
+evidence is `reports/zero-20m-dpo-smoke.json`.
+
+The approved one-epoch DPO run then completed on the RTX 4080 SUPER with bf16,
+batch size 2, and maximum length 1,024. It consumed all 50,000 pairs in 25,000
+optimizer steps in 3,600.7 seconds. Loss moved from `0.6931472` on the first
+update to `0.3874257` on the final update; the mean loss over the last 100
+updates was `0.7263714`. The logged mean per-batch preference accuracy was
+`0.6313`, and all losses and gradient norms were finite. Final artifacts are
+under `artifacts/post-training/dpo/hybrid-muon-seed-2027-long/`, with evidence
+in `reports/zero-20m-dpo-hybrid-muon-long.json` and final checkpoint
+`step-000000025000`.
 
 ## Training checkpoints
 
