@@ -18,13 +18,37 @@ for `mha`, `1.7749760`/`5.9001` for `layer_norm`, and `1.7624807`/`5.8269`
 for `tied_embeddings`. Every sample produced the same continuation:
 `, there was a little girl named Lily. She loved to play outside in the`.
 
-The completed CPU-only post-training foundation is under
-`src/lm_from_zero/post_training/`: a versioned role-delimited chat template,
-conversation validation, assistant-only SFT labels, left truncation, right
-padding, and the assistant-only causal loss. Its focused suite passes 5 tests;
-the complete offline gate passes 254 tests, Ruff, strict mypy, and 85.25% total
-branch coverage. No dataset has been downloaded and no SFT GPU work has
-started.
+The post-training implementation under `src/lm_from_zero/post_training/` now
+includes the versioned role-delimited chat template, conversation validation,
+assistant-only SFT labels, left truncation, right padding, deterministic
+SmolTalk2 mix preparation, and a generated CUDA smoke runner. The local mix
+contains exactly 100,000 canonical records at pinned revision
+`fc6cc2103c066455aade5d7fbb346039ae36ca5e`; its records hash is
+`f1c5770238d9ec8fd8f6a50ebef405b295e5450adf0b1ed51c4cfffacaaab811`.
+
+The bounded CUDA smoke completed for the four selected seed-2027 M8
+checkpoints (`hybrid_muon`, `mha`, `layer_norm`, and `tied_embeddings`) with
+bf16, batch size 2, a 512-token bound, and two AdamW updates per variant. All
+losses and gradient norms were finite, and each variant improved its measured
+loss on the second update. Generated evidence is
+`reports/zero-20m-sft-smoke.json`.
+
+The approved full SFT run completed for the selected `hybrid_muon` checkpoint
+using the baseline model variant and AdamW: one epoch, 12,500 optimizer steps,
+100,000 examples, 62,684,063 supervised tokens, and final assistant-only loss
+`1.4705926` (mean of the last 100 steps `1.4433360`). Its durable run manifest,
+metrics, recovery checkpoints, and final step-12,500 model are under
+`artifacts/post-training/sft/hybrid-muon-seed-2027/`; the generated summary is
+`reports/zero-20m-sft-hybrid-muon.json`. The final checkpoint and all 12,500
+optimizer metrics passed structural, hash, contiguity, and finite-value
+validation.
+
+The deterministic native chat check is
+`reports/zero-20m-sft-generation.json`. On three fixed prompts, the 20M model
+mostly emitted tool-call-shaped continuations rather than direct answers. This
+is the first behavior result for the SFT lifecycle; held-out chat evaluation
+is still required before making a quality claim. The next gate is approval to
+publish this milestone and/or download the preference data for DPO.
 
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
@@ -50,8 +74,10 @@ CPU-only aggregation now validates all 21 jobs and writes
 selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
 `tied_embeddings` as fastest, and recommends the four-variant union for
 downstream evaluation. Fixed-window validation and native generation for that
-union are complete. The next external gate is explicit approval for the pinned
-SmolTalk2 download and a bounded CUDA SFT smoke.
+union are complete. The full SFT lifecycle now has a completed training run,
+checkpoint, and native generation evidence. The next external gate is
+approval to publish this milestone and/or download the preference data for
+DPO.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 

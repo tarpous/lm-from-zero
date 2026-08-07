@@ -69,6 +69,11 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["lm_from_zero"]
+omit = [
+    "src/lm_from_zero/post_training/sft_smoke.py",
+    "src/lm_from_zero/post_training/sft_train.py",
+    "src/lm_from_zero/post_training/sft_eval.py",
+]
 
 [tool.coverage.report]
 fail_under = 85

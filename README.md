@@ -680,10 +680,28 @@ covered by focused CPU tests.
 
 The planned first-stage policy is represented by `SFTConfig`: 100,000 examples,
 one epoch, maximum length 1,024, learning rate `2e-5`, and length-bucketed
-padding before any padding-free packing. No SmolTalk2 data has been downloaded
-and no SFT GPU run has started. The next gate is explicit approval for the
-pinned dataset download and bounded CUDA smoke after the offline gate and
-source publication.
+padding before any padding-free packing. The deterministic local mix is now
+materialized under `artifacts/post-training/smoltalk2-sft-100k/` from
+`HuggingFaceTB/smoltalk2` config `SFT` at revision
+`fc6cc2103c066455aade5d7fbb346039ae36ca5e`; it contains exactly 100,000
+canonical records and records hash
+`f1c5770238d9ec8fd8f6a50ebef405b295e5450adf0b1ed51c4cfffacaaab811`.
+
+The bounded CUDA smoke completed for `hybrid_muon`, `mha`, `layer_norm`, and
+`tied_embeddings` from the seed-2027 step-12,208 checkpoints using bf16,
+batch size 2, 512-token input bounds, and two AdamW updates per variant. The
+full one-epoch run then completed for the selected `hybrid_muon` checkpoint:
+12,500 optimizer steps, all 100,000 examples, 62,684,063 supervised tokens,
+and final assistant-only loss `1.4705926`. Its final checkpoint is under
+`artifacts/post-training/sft/hybrid-muon-seed-2027/`; generated training
+evidence is `reports/zero-20m-sft-hybrid-muon.json`.
+
+The deterministic native chat check is in
+`reports/zero-20m-sft-generation.json`. The small model produced
+tool-call-shaped continuations for these prompts rather than consistently
+answering them directly, so the training lifecycle is complete while chat
+quality still needs a held-out evaluation. The next gate is approval to
+publish this milestone and/or download the preference data for DPO.
 
 ## Training checkpoints
 

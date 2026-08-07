@@ -43,11 +43,151 @@ DenseModelVariantOption = Literal[
     "without_qk_norm",
     "tied_embeddings",
 ]
+SFTVariantOption = Literal["hybrid_muon", "mha", "layer_norm", "tied_embeddings"]
 
 
 @app.callback()
 def main() -> None:
     """Inspect and build local lm-from-zero artifacts."""
+
+
+@app.command("run-sft-smoke")
+def run_sft_smoke_command(
+    dataset_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    tokenizer: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    checkpoint_root: Annotated[Path, typer.Option()] = Path(
+        "artifacts/dense-ablations-clean-20260807"
+    ),
+    output: Annotated[Path, typer.Option()] = Path("reports/zero-20m-sft-smoke.json"),
+    seed: Annotated[int, typer.Option(min=0)] = 2027,
+    checkpoint_step: Annotated[int, typer.Option(min=0)] = 12_208,
+    batch_size: Annotated[int, typer.Option(min=1)] = 2,
+    max_length: Annotated[int, typer.Option(min=2)] = 512,
+    steps: Annotated[int, typer.Option(min=1)] = 2,
+) -> None:
+    """Run the bounded CUDA assistant-only SFT smoke for selected M8 variants."""
+
+    from lm_from_zero.models import DenseModelVariant
+    from lm_from_zero.post_training.sft_smoke import (
+        SFTSmokeVariant,
+        run_sft_smoke,
+    )
+
+    checkpoint_id = f"step-{checkpoint_step:012d}"
+    variants: tuple[SFTSmokeVariant, ...] = (
+        "hybrid_muon",
+        "mha",
+        "layer_norm",
+        "tied_embeddings",
+    )
+    checkpoints: dict[SFTSmokeVariant, Path] = {
+        variant: checkpoint_root
+        / variant
+        / f"seed-{seed}"
+        / "checkpoints"
+        / checkpoint_id
+        for variant in variants
+    }
+    model_variants: dict[SFTSmokeVariant, DenseModelVariant] = {
+        "hybrid_muon": "baseline",
+        "mha": "mha",
+        "layer_norm": "layer_norm",
+        "tied_embeddings": "tied_embeddings",
+    }
+    report = run_sft_smoke(
+        dataset_manifest_path=dataset_manifest,
+        tokenizer_path=tokenizer,
+        checkpoints=checkpoints,
+        model_variants=model_variants,
+        output_path=output,
+        batch_size=batch_size,
+        max_length=max_length,
+        steps=steps,
+    )
+    typer.echo(report.model_dump_json())
+
+
+@app.command("run-sft")
+def run_sft_command(
+    dataset_manifest: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/smoltalk2-sft-100k/manifest.json"
+    ),
+    tokenizer: Annotated[Path, typer.Option()] = Path(
+        "artifacts/tokenizers/tinystories-16k/tokenizer.json"
+    ),
+    source_checkpoint: Annotated[Path, typer.Option()] = Path(
+        "artifacts/dense-ablations-clean-20260807/hybrid_muon/seed-2027/"
+        "checkpoints/step-000000012208"
+    ),
+    output: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/sft/hybrid-muon-seed-2027"
+    ),
+    report: Annotated[Path, typer.Option()] = Path(
+        "reports/zero-20m-sft-hybrid-muon.json"
+    ),
+    variant: Annotated[SFTVariantOption, typer.Option()] = "hybrid_muon",
+    model_variant: Annotated[DenseModelVariantOption, typer.Option()] = "baseline",
+    batch_size: Annotated[int, typer.Option(min=1)] = 8,
+    bucket_size: Annotated[int, typer.Option(min=1)] = 256,
+    max_length: Annotated[int, typer.Option(min=2)] = 1_024,
+    checkpoint_every_steps: Annotated[int, typer.Option(min=1)] = 1_000,
+) -> None:
+    """Run one complete deterministic CUDA SFT epoch and publish its artifacts."""
+
+    from lm_from_zero.post_training.sft_train import (
+        SFTTrainingConfig,
+        run_sft_training,
+    )
+
+    result = run_sft_training(
+        dataset_manifest_path=dataset_manifest,
+        tokenizer_path=tokenizer,
+        source_checkpoint=source_checkpoint,
+        output_directory=output,
+        report_path=report,
+        variant=variant,
+        model_variant=model_variant,
+        config=SFTTrainingConfig(
+            batch_size=batch_size,
+            bucket_size=bucket_size,
+            max_length=max_length,
+            checkpoint_every_steps=checkpoint_every_steps,
+        ),
+    )
+    typer.echo(result.model_dump_json())
+
+
+@app.command("generate-sft")
+def generate_sft_command(
+    run_directory: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/sft/hybrid-muon-seed-2027"
+    ),
+    tokenizer: Annotated[Path, typer.Option()] = Path(
+        "artifacts/tokenizers/tinystories-16k/tokenizer.json"
+    ),
+    output: Annotated[Path, typer.Option()] = Path(
+        "reports/zero-20m-sft-generation.json"
+    ),
+    max_new_tokens: Annotated[int, typer.Option(min=1)] = 64,
+    seed: Annotated[int, typer.Option()] = 1_337,
+) -> None:
+    """Generate deterministic chat continuations from a completed SFT run."""
+
+    from lm_from_zero.post_training.sft_eval import run_sft_generation
+
+    report = run_sft_generation(
+        run_directory=run_directory,
+        tokenizer_path=tokenizer,
+        output_path=output,
+        prompts=(
+            "Explain why the sky is blue in one sentence.",
+            "Write a short bedtime story about a red kite.",
+            "List three steps for making tea.",
+        ),
+        max_new_tokens=max_new_tokens,
+        seed=seed,
+    )
+    typer.echo(report.model_dump_json())
 
 
 @app.command("sample-tinystories")
@@ -588,6 +728,26 @@ def build_dense_ablation_downstream_report_command(
     )
     write_dense_ablation_downstream_report(output, report)
     typer.echo(report.model_dump_json())
+
+
+@app.command("prepare-sft-mix")
+def prepare_sft_mix_command(
+    output: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/smoltalk2-sft-100k"
+    ),
+    target_examples: Annotated[int, typer.Option(min=1)] = 100_000,
+    selection_seed: Annotated[int, typer.Option()] = 1_337,
+) -> None:
+    """Prepare the pinned deterministic SmolTalk2 no-think SFT mix."""
+
+    from lm_from_zero.post_training.dataset import prepare_sft_mix
+
+    manifest = prepare_sft_mix(
+        output,
+        target_examples=target_examples,
+        selection_seed=selection_seed,
+    )
+    typer.echo(manifest.canonical_json())
 
 
 @app.command("pretrain-mamba2")
