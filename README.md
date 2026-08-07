@@ -665,6 +665,26 @@ The validation mean losses/perplexities are `1.7428036`/`5.7133` for
 deterministic samples produced the same continuation:
 `, there was a little girl named Lily. She loved to play outside in the`.
 
+## Post-training chat and SFT foundation
+
+The first post-training implementation is CPU-only and data-independent. The
+versioned role-delimited template in `lm_from_zero.post_training.chat` uses the
+fixed `system`, `user`, `assistant`, `end`, `bos`, and `eos` tokens. Conversation
+validation rejects control-token injection and invalid role order. The SFT
+renderer in `lm_from_zero.post_training.sft` produces causal examples with
+non-assistant and padding labels set to `-100`; assistant content, turn
+boundaries, and final EOS remain supervised. Its left-truncation policy drops
+complete oldest user/assistant pairs before trimming content tokens while
+preserving control markers. The collator and assistant-only causal loss are
+covered by focused CPU tests.
+
+The planned first-stage policy is represented by `SFTConfig`: 100,000 examples,
+one epoch, maximum length 1,024, learning rate `2e-5`, and length-bucketed
+padding before any padding-free packing. No SmolTalk2 data has been downloaded
+and no SFT GPU run has started. The next gate is explicit approval for the
+pinned dataset download and bounded CUDA smoke after the offline gate and
+source publication.
+
 ## Training checkpoints
 
 Each published recovery point is an immutable directory under an ignored

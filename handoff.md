@@ -2,13 +2,11 @@
 
 ## Session closeout (August 7, 2026, M8 execution closeout)
 
-The pushed revision `3e5ee58` includes pinned `tqdm` live progress reporting for
-long-running training, evaluation, generation, shard, tokenizer, sampling,
-and calibration paths. Machine-readable JSON, JSONL, and Parquet artifacts are
-unchanged. The repository gate passed with 80 formatted files, Ruff, strict
-mypy, and 245 tests; total branch coverage is 85.10%. This revision is local
-only in the sense that the ignored run artifacts remain local; the source
-revision was pushed to `origin/main`.
+The pushed M8 downstream revision `64a4631` includes pinned `tqdm` live progress
+reporting, variant-aware dense evaluation/generation, canonical M8 aggregation,
+and downstream evidence reporting. Its complete offline gate passed Ruff,
+strict mypy, 249 tests, and 85.01% total branch coverage. The source revision
+is on `origin/main`; ignored run artifacts remain local.
 
 This closeout now also includes the selected-variant downstream evidence. The
 canonical report is
@@ -20,11 +18,13 @@ for `mha`, `1.7749760`/`5.9001` for `layer_norm`, and `1.7624807`/`5.8269`
 for `tied_embeddings`. Every sample produced the same continuation:
 `, there was a little girl named Lily. She loved to play outside in the`.
 
-The current working-tree implementation adds the variant-aware evaluation and
-generation CLI controls plus the downstream report builder and regression
-coverage. Its complete offline gate passes 249 tests, Ruff formatting/lint,
-strict mypy, and 85.01% total branch coverage. These source changes are not
-committed or pushed yet.
+The completed CPU-only post-training foundation is under
+`src/lm_from_zero/post_training/`: a versioned role-delimited chat template,
+conversation validation, assistant-only SFT labels, left truncation, right
+padding, and the assistant-only causal loss. Its focused suite passes 5 tests;
+the complete offline gate passes 254 tests, Ruff, strict mypy, and 85.25% total
+branch coverage. No dataset has been downloaded and no SFT GPU work has
+started.
 
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
@@ -50,7 +50,8 @@ CPU-only aggregation now validates all 21 jobs and writes
 selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
 `tied_embeddings` as fastest, and recommends the four-variant union for
 downstream evaluation. Fixed-window validation and native generation for that
-union are complete; the next gate is the source commit/push decision.
+union are complete. The next external gate is explicit approval for the pinned
+SmolTalk2 download and a bounded CUDA SFT smoke.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 
