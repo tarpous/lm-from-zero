@@ -1,28 +1,37 @@
 # Session handoff: dense vertical-slice implementation
 
-## Session closeout (August 7, 2026, progress revision)
+## Session closeout (August 7, 2026, M8 execution closeout)
 
-The local revision now includes pinned `tqdm` live progress reporting for
+The pushed revision `5e660b7` now includes pinned `tqdm` live progress reporting for
 long-running training, evaluation, generation, shard, tokenizer, sampling,
 and calibration paths. Machine-readable JSON, JSONL, and Parquet artifacts are
 unchanged. The repository gate passed with 80 formatted files, Ruff, strict
 mypy, and 245 tests; total branch coverage is 85.10%. This revision is local
-only and has not been pushed.
+only in the sense that the ignored run artifacts remain local; the source
+revision was pushed to `origin/main`.
 
-The M8 bounded GPU smoke is complete for all 21 variant jobs. Every step-4
+The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
 stream ended at step 4 with finite loss, gradient, throughput, and memory
-metrics. These are bounded smoke evidence, not the planned 100M-token results;
-the artifacts were produced while the tree was dirty and must not be treated
-as clean-revision scientific evidence.
+metrics. Those smoke checkpoints were produced while the tree was dirty.
+
+The subsequent 21 full jobs resumed from those step-4 checkpoints and reached
+the exact 12,208-optimizer-step / 100,007,936-token boundary. Every final
+checkpoint and event stream passed the read-only audit: all 21 final manifests
+bind clean revision `5e660b7`, all include a `run_complete` event at the exact
+boundary, and every terminal loss, gradient norm, and throughput value is
+finite. Because the runs resumed from dirty step-4 parents, preserve that
+lineage caveat and do not describe them as from-step-zero clean-revision
+reruns.
 
 The missing M7 dense seed-1337 screening checkpoint was recovered by replaying
 the exact 500M-token scheduler to step 12,208, then copied into the canonical
 `artifacts/architecture-study/dense/seed-1337/checkpoints/step-000000012208`
-directory and validated. The regenerated M8 plan now marks all three dense
+directory and validated. The regenerated M8 plan marks all three dense
 baseline seeds as `reuse_m7_screening`; its `execution_ready` flag remains
-false by contract. The next gate is explicit approval for the 21 full
-100M-token variant runs on the RTX 4080 SUPER.
+false by plan-schema contract even though the 21 full runs are complete. The
+next step is CPU-side M8 result aggregation and downstream evaluation, not
+another 100M-token training pass.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 

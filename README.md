@@ -614,18 +614,21 @@ PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli \
   --output artifacts/dense-ablations/plan.json
 ```
 
-The generated plan contains 24 jobs but is deliberately
-`execution_ready=false`: the canonical baseline jobs are explicit; two reuse
-the M7 dense screening checkpoints and seed `1337` requires recovery. All 21
-research jobs now have executable variant
-controls and are marked `ready_for_bounded_gpu_smoke`. The current local
-artifact inventory is also recorded: seed `1337` needs M7 screening-checkpoint
-recovery, while seeds `2027` and `3407` can reuse their screening checkpoints.
-The model variants,
-hybrid Muon/AdamW partition, runner controls, checkpoint-resume layout, and
-standard export rejection are CPU-tested. The plan remains GPU-gated until
-each variant passes a short RTX 4080 SUPER numerical/throughput smoke; no
-100M-token M8 run may start yet.
+The generated plan contains 24 jobs and is deliberately
+`execution_ready=false`: this field describes the pre-execution plan schema,
+not a completion tracker. The canonical baseline jobs are explicit; all 21
+research jobs have executable variant controls and are marked
+`ready_for_bounded_gpu_smoke`. The M7 seed `1337` screening checkpoint was
+recovered before execution, so all three baseline seeds now have reusable
+screening checkpoints.
+
+The 21 research jobs have since completed the exact 100M-token scheduler on
+the RTX 4080 SUPER. Their final checkpoints and JSONL streams are retained
+under `artifacts/dense-ablations/` and were audited for checkpoint integrity,
+the step-12,208 / 100,007,936-token boundary, finite terminal metrics, and the
+clean final source revision. They resumed from the validated four-step smoke
+parents, so the lineage retains the smoke parents' dirty-tree provenance; do
+not describe the result as a from-step-zero clean-revision rerun.
 
 ## Training checkpoints
 
