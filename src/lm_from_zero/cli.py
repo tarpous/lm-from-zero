@@ -750,6 +750,32 @@ def prepare_sft_mix_command(
     typer.echo(manifest.canonical_json())
 
 
+@app.command("prepare-dpo-mix")
+def prepare_dpo_mix_command(
+    source_parquet: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    tokenizer: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/ultrafeedback-binarized-50k"
+    ),
+    target_pairs: Annotated[int, typer.Option(min=1)] = 50_000,
+    selection_seed: Annotated[int, typer.Option()] = 1_337,
+    max_length: Annotated[int, typer.Option(min=2)] = 1_024,
+) -> None:
+    """Prepare the pinned deterministic UltraFeedback DPO mix."""
+
+    from lm_from_zero.post_training.preference_dataset import prepare_preference_mix
+
+    manifest = prepare_preference_mix(
+        source_parquet,
+        output,
+        tokenizer,
+        target_pairs=target_pairs,
+        selection_seed=selection_seed,
+        max_length=max_length,
+    )
+    typer.echo(manifest.canonical_json())
+
+
 @app.command("pretrain-mamba2")
 def pretrain_mamba2_command(
     build_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],

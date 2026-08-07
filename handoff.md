@@ -15,11 +15,25 @@ tokenizer, checkpoint, template, and context hashes. Focused tests cover
 schema rejection, shared-prefix rendering, truncation, hand-calculated loss,
 gradients, and cache-key invalidation.
 
-The preference dataset is not yet present locally. The next gated action is to
-inspect and then obtain the pinned `HuggingFaceH4/ultrafeedback_binarized`
-training source, prepare its deterministic 50,000-pair manifest, and run the
-bounded DPO smoke before any long preference-optimization run. Raw data and
-reference logits remain outside Git.
+The pinned `HuggingFaceH4/ultrafeedback_binarized` training parquet is now
+present under ignored local artifacts at revision
+`3949bf5f8c17c394422ccfab0c31ea9c20bdeb85`. The source file hash is
+`0f951ca4502001d31f3e4c70716ae51d20e4ce4f847d12b6a6695a40d4d353a8`.
+Preparation scanned 61,135 rows, retained 60,700 canonical renderable pairs,
+rejected 435 rows under the recorded validation policy, and selected 50,000
+pairs with seed 1337 and `prompt_id_sha256_ascending` ordering. The local
+manifest is `artifacts/post-training/ultrafeedback-binarized-50k/manifest.json`;
+its records hash is
+`06d9d822ec75b5d1889776337a78520d374b4f6a51eaf8a82afb495acf049391`.
+The manifest binds the 16K tokenizer hash
+`f65920522fb584143cfee0f0e9d7581286bbde9fdc5c068a34d5ce0441695da9`, the
+role-delimited chat-template hash, the 1,024-token left-truncation policy, and
+10,873 selected pairs that require truncation. Raw data and reference logits
+remain outside Git.
+
+The next gated action is the bounded DPO CUDA smoke on the selected SFT
+checkpoint; no long preference-optimization run should start before that
+smoke is validated.
 
 ## Session closeout (August 7, 2026, M8 execution closeout)
 
@@ -68,8 +82,8 @@ The deterministic native chat check is
 `reports/zero-20m-sft-generation.json`. On three fixed prompts, the 20M model
 mostly emitted tool-call-shaped continuations rather than direct answers. This
 is the first behavior result for the SFT lifecycle; held-out chat evaluation
-is still required before making a quality claim. The next gate is approval to
-obtain the pinned preference data for DPO.
+is still required before making a quality claim. The preference manifest is
+now prepared; the next gate is approval for the bounded DPO CUDA smoke.
 
 The M8 bounded GPU smoke completed for all 21 variant jobs. Every step-4
 checkpoint passed structural and cryptographic validation, and every JSONL
@@ -96,8 +110,8 @@ selects `hybrid_muon`, `mha`, and `layer_norm` by mean terminal loss, identifies
 `tied_embeddings` as fastest, and recommends the four-variant union for
 downstream evaluation. Fixed-window validation and native generation for that
 union are complete. The full SFT lifecycle now has a completed training run,
-checkpoint, and native generation evidence. The next external gate is
-approval to obtain the pinned preference data for DPO.
+checkpoint, and native generation evidence. The preference manifest is now
+prepared; the next external gate is the bounded DPO CUDA smoke.
 
 ## Current update (August 5, 2026, Milestone 7 downstream closeout)
 

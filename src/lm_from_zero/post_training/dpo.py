@@ -276,10 +276,10 @@ def render_preference_pair(
         rejected_content,
         max_content_tokens=max_response_block_length - 2,
     )
-    was_truncated = chosen_truncated or rejected_truncated
     chosen_block_length = len(chosen_content) + 2
     rejected_block_length = len(rejected_content) + 2
     prompt_budget = max_length - 2 - max(chosen_block_length, rejected_block_length)
+    prompt_truncated = False
 
     if truncation == "error":
         full_prompt_length = sum(len(block.token_ids) for block in prompt_blocks)
@@ -294,19 +294,19 @@ def render_preference_pair(
                 raise DPOFormatError(
                     "preference context is too short for its control markers"
                 )
-            was_truncated = True
+            prompt_truncated = True
 
     chosen = _assemble_preference_sequence(
         prompt_blocks,
         chosen_content,
         template_hash=template.template_hash,
-        truncated=was_truncated,
+        truncated=chosen_truncated or prompt_truncated,
     )
     rejected = _assemble_preference_sequence(
         prompt_blocks,
         rejected_content,
         template_hash=template.template_hash,
-        truncated=was_truncated,
+        truncated=rejected_truncated or prompt_truncated,
     )
     return PreferencePairExample(
         chosen=chosen,

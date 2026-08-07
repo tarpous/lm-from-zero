@@ -700,8 +700,8 @@ The deterministic native chat check is in
 `reports/zero-20m-sft-generation.json`. The small model produced
 tool-call-shaped continuations for these prompts rather than consistently
 answering them directly, so the training lifecycle is complete while chat
-quality still needs a held-out evaluation. The next gate is approval to obtain
-the pinned preference data for DPO.
+quality still needs a held-out evaluation. The preference manifest is now
+prepared; the next gate is approval for the bounded DPO CUDA smoke.
 
 ## Preference optimization foundation
 
@@ -715,10 +715,22 @@ reference-log-probability cache identity binds model, tokenizer, checkpoint,
 chat-template, and context-length hashes so the same frozen reference can be
 reused by DPO and APO.
 
-The next gated action is to inspect and obtain the pinned
-`HuggingFaceH4/ultrafeedback_binarized` source, prepare its deterministic
-50,000-pair manifest, and run a bounded DPO smoke. Preference data and cached
-reference logits remain local ignored artifacts.
+The pinned `HuggingFaceH4/ultrafeedback_binarized` training parquet is now
+available locally at revision
+`3949bf5f8c17c394422ccfab0c31ea9c20bdeb85`. Preparation scanned 61,135 rows,
+retained 60,700 canonical renderable pairs, rejected 435 rows under the
+recorded validation policy, and selected 50,000 pairs using seed 1337 and
+`prompt_id_sha256_ascending` ordering. The ignored local manifest is
+`artifacts/post-training/ultrafeedback-binarized-50k/manifest.json`; its records
+hash is
+`06d9d822ec75b5d1889776337a78520d374b4f6a51eaf8a82afb495acf049391`.
+The manifest binds the tokenizer and chat-template hashes, a 1,024-token
+left-truncation policy, and 10,873 selected pairs requiring truncation. Raw
+preference data and cached reference logits remain local ignored artifacts.
+
+The next gated action is the bounded DPO CUDA smoke on the selected SFT
+checkpoint. A long preference-optimization run follows only after that smoke
+passes its artifact and finite-loss checks.
 
 ## Training checkpoints
 
