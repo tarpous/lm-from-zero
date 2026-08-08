@@ -39,8 +39,10 @@ from lm_from_zero.post_training.preference_dataset import (
     PREFERENCE_SOURCE_FILE,
     PREFERENCE_SOURCE_SPLIT,
     PreferenceDatasetError,
+    PreferenceHoldoutManifest,
     PreferenceMixManifest,
     PreferenceRecord,
+    prepare_preference_holdout,
     prepare_preference_mix,
 )
 from lm_from_zero.post_training.sft import (
@@ -71,6 +73,7 @@ __all__ = [
     "DPOFormatError",
     "DPOObjectiveOutput",
     "PreferenceDatasetError",
+    "PreferenceHoldoutManifest",
     "PreferenceMixManifest",
     "PreferencePair",
     "PreferencePairExample",
@@ -92,6 +95,7 @@ __all__ = [
     "dpo_loss",
     "dpo_objective",
     "masked_sequence_logprob",
+    "prepare_preference_holdout",
     "prepare_preference_mix",
     "prepare_sft_mix",
     "render_preference_pair",

@@ -1,5 +1,68 @@
 # Session handoff: dense vertical-slice implementation
 
+## Current update (August 8, 2026, held-out DPO evaluation complete)
+
+The deterministic held-out preference split and evaluator are now implemented
+locally. `prepare-dpo-holdout` rebuilt the pinned UltraFeedback source under
+the original tokenizer, role template, left-truncation, and seed-1337 ordering,
+then excluded all 50,000 source-coordinate/prompt-ID pairs in the DPO training
+mix. The ignored holdout manifest is
+`artifacts/post-training/ultrafeedback-binarized-holdout/manifest.json`; it
+contains all 10,700 remaining valid pairs, records hash
+`9e954da56bda81694b836c7e28236cfb9d4daed47b9e447ababf7d026dcbbd6d`, and
+training-manifest hash
+`a610c57110730e24c6797cc4f74464be5b214d419e06a91867da091bd9cb13a3`.
+A direct audit found zero overlap between the 50,000 training and 10,700
+held-out coordinates.
+
+`lm_from_zero.post_training.preference_evaluation` now validates both final
+checkpoint lineages and every model/recovery artifact before scoring held-out
+chosen/rejected pairs. Its report records each model's preference accuracy,
+sequence margins, response lengths, truncation rate, DPO loss and reward
+statistics, exact response-token forward KL from DPO policy to SFT reference,
+and side-by-side deterministic behavior generations. The bounded mode is
+explicit: `--max-pairs 8` produces a smoke report without presenting itself as
+the full result. Ruff, strict mypy, and the full offline suite passed: 271 tests
+with 85.03% total coverage.
+
+The approved eight-pair CUDA smoke completed successfully and validated the
+evaluator contract. The approved full CUDA pass then evaluated all 10,700
+held-out pairs in 452.7 evaluator seconds on the RTX 4080 SUPER with bf16.
+The canonical local report is
+`reports/zero-20m-dpo-heldout-full.json`; its SHA-256 is
+`22dfa083df825081feb1d4c46a586688ad2bd45ce1337c0ffe457638a23a5e43`.
+
+The full report records SFT-reference sequence preference accuracy of
+`0.43215`, DPO-policy sequence preference accuracy of `0.43318`, DPO
+objective preference accuracy of `0.64439`, mean DPO loss of `0.74303`, mean
+reward margin of `8.63951`, and mean policy-to-reference response-token
+forward KL of `0.023786`. Both checkpoint summaries cover all 10,700 pairs;
+2,393 pairs were truncated under the shared 1,024-token contract. The report
+also contains the fixed three-prompt behavior panel and complete checkpoint,
+manifest, and configuration bindings.
+
+The next phase is offline closeout of these local changes, followed by the
+usual explicit commit and push gate. The full report and smoke report are
+local generated evidence; raw data, checkpoints, and other runtime artifacts
+remain outside Git.
+
+The exact smoke command used for the bounded validation was:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli evaluate-dpo-holdout \
+  artifacts/post-training/ultrafeedback-binarized-holdout/manifest.json \
+  --max-pairs 8 \
+  --output reports/zero-20m-dpo-heldout-smoke.json
+```
+
+The full evaluation command was:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli evaluate-dpo-holdout \
+  artifacts/post-training/ultrafeedback-binarized-holdout/manifest.json \
+  --output reports/zero-20m-dpo-heldout-full.json
+```
+
 ## Current update (August 7, 2026, DPO completed)
 
 The completed hybrid-Muon SFT milestone is published on `origin/main` at

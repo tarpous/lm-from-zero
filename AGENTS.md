@@ -156,3 +156,10 @@ The offline runner suite includes a real two-process CPU/Gloo DDP test. DDP
 commands must be launched through `torchrun`; rank zero alone owns logs,
 checkpoint publication, and retention. Keep global token accounting and
 rank-local cursor/RNG recovery covered when changing the runner.
+
+The `prepare-dpo-holdout` command is CPU-only and builds a deterministic
+preference split excluded from the recorded DPO training mix. The
+`evaluate-dpo-holdout` command performs CUDA scoring of both final checkpoints;
+validate the held-out split and checkpoint bindings first, then obtain fresh
+approval before running its `--max-pairs 8` smoke. A separate approval is
+required before the unbounded full evaluation.

@@ -700,10 +700,7 @@ The deterministic native chat check is in
 `reports/zero-20m-sft-generation.json`. The small model produced
 tool-call-shaped continuations for these prompts rather than consistently
 answering them directly, so the training lifecycle is complete while chat
-quality still needs a held-out evaluation. The preference manifest, bounded DPO
-smoke, durable full-run runner, and approved one-epoch DPO run are now
-complete; held-out preference evaluation and downstream behavior analysis are
-the next steps.
+quality still needs held-out measurement.
 
 ## Preference optimization
 
@@ -747,6 +744,54 @@ updates was `0.7263714`. The logged mean per-batch preference accuracy was
 under `artifacts/post-training/dpo/hybrid-muon-seed-2027-long/`, with evidence
 in `reports/zero-20m-dpo-hybrid-muon-long.json` and final checkpoint
 `step-000000025000`.
+
+The held-out evaluator excludes the 50,000 training coordinates from the same
+pinned source before scoring either checkpoint. The local 10,700-pair split is
+under `artifacts/post-training/ultrafeedback-binarized-holdout/`; its records
+hash is `9e954da56bda81694b836c7e28236cfb9d4daed47b9e447ababf7d026dcbbd6d`.
+It retains the original source, tokenizer, template, truncation, and
+selection bindings while recording the exact training-manifest and
+training-record hashes it excludes. Recreate that split from the local parquet
+with:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli prepare-dpo-holdout \
+  artifacts/post-training/ultrafeedback-binarized/raw/data/train_prefs-00000-of-00001.parquet \
+  artifacts/post-training/ultrafeedback-binarized-50k/manifest.json \
+  artifacts/tokenizers/tinystories-16k/tokenizer.json
+```
+
+The CUDA evaluator validates both final checkpoint lineages and all artifact
+hashes, then reports held-out chosen/rejected margins, preference accuracy, DPO
+loss, exact forward KL from the policy to the SFT reference over response-token
+positions, truncation and response lengths, and side-by-side greedy generations
+for a fixed behavior panel. Run it only after a fresh GPU approval, beginning
+with a bounded eight-pair smoke:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli evaluate-dpo-holdout \
+  artifacts/post-training/ultrafeedback-binarized-holdout/manifest.json \
+  --max-pairs 8 \
+  --output reports/zero-20m-dpo-heldout-smoke.json
+```
+
+The unbounded command emits the canonical full report:
+
+```bash
+PYTHONPATH=src uv run --frozen python -m lm_from_zero.cli evaluate-dpo-holdout \
+  artifacts/post-training/ultrafeedback-binarized-holdout/manifest.json \
+  --output reports/zero-20m-dpo-heldout-full.json
+```
+
+The full 10,700-pair report is generated locally at
+`reports/zero-20m-dpo-heldout-full.json`. It records SFT-reference sequence
+preference accuracy `0.43215`, DPO-policy sequence preference accuracy
+`0.43318`, DPO objective preference accuracy `0.64439`, mean DPO loss
+`0.74303`, mean reward margin `8.63951`, and mean policy-to-reference
+response-token forward KL `0.023786`. Both checkpoint summaries cover all
+10,700 pairs, with 2,393 pairs truncated under the shared 1,024-token
+contract. The report also contains the fixed three-prompt behavior panel and
+complete artifact lineage bindings.
 
 ## Training checkpoints
 

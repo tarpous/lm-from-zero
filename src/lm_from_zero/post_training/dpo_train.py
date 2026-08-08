@@ -371,11 +371,14 @@ def _iter_preference_batches(
     batch_size: int,
     bucket_size: int,
     max_length: int,
+    max_records: int | None = None,
 ) -> Iterator[_PreferenceBatch]:
     """Render records in deterministic length buckets for low padding waste."""
 
     if batch_size <= 0 or bucket_size <= 0:
         raise DPOTrainingError("DPO batch and bucket sizes must be positive")
+    if max_records is not None and max_records <= 0:
+        raise DPOTrainingError("DPO maximum preference records must be positive")
     bucket: list[_RenderedPreference] = []
     record_index = 0
 
@@ -396,6 +399,8 @@ def _iter_preference_batches(
         for line in handle:
             if not line.strip():
                 continue
+            if max_records is not None and record_index >= max_records:
+                break
             record = PreferenceRecord.model_validate_json(line)
             rendered = render_preference_pair(
                 record.pair,

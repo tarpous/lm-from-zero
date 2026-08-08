@@ -182,6 +182,49 @@ def run_dpo_command(
     typer.echo(result.model_dump_json())
 
 
+@app.command("evaluate-dpo-holdout")
+def evaluate_dpo_holdout_command(
+    holdout_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    tokenizer: Annotated[Path, typer.Option()] = Path(
+        "artifacts/tokenizers/tinystories-16k/tokenizer.json"
+    ),
+    sft_run: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/sft/hybrid-muon-seed-2027"
+    ),
+    dpo_run: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/dpo/hybrid-muon-seed-2027-long"
+    ),
+    output: Annotated[Path, typer.Option()] = Path("reports/zero-20m-dpo-heldout.json"),
+    batch_size: Annotated[int, typer.Option(min=1)] = 2,
+    bucket_size: Annotated[int, typer.Option(min=1)] = 256,
+    max_length: Annotated[int, typer.Option(min=2)] = 1_024,
+    max_pairs: Annotated[int | None, typer.Option(min=1)] = None,
+    generation_max_new_tokens: Annotated[int, typer.Option(min=1)] = 64,
+) -> None:
+    """Score final SFT and DPO checkpoints on held-out preference pairs."""
+
+    from lm_from_zero.post_training.preference_evaluation import (
+        PreferenceEvaluationConfig,
+        run_dpo_heldout_evaluation,
+    )
+
+    report = run_dpo_heldout_evaluation(
+        holdout_manifest_path=holdout_manifest,
+        tokenizer_path=tokenizer,
+        sft_run_directory=sft_run,
+        dpo_run_directory=dpo_run,
+        output_path=output,
+        config=PreferenceEvaluationConfig(
+            batch_size=batch_size,
+            bucket_size=bucket_size,
+            max_length=max_length,
+            max_pairs=max_pairs,
+            generation_max_new_tokens=generation_max_new_tokens,
+        ),
+    )
+    typer.echo(report.model_dump_json())
+
+
 @app.command("run-sft")
 def run_sft_command(
     dataset_manifest: Annotated[Path, typer.Option()] = Path(
@@ -847,6 +890,32 @@ def prepare_dpo_mix_command(
         target_pairs=target_pairs,
         selection_seed=selection_seed,
         max_length=max_length,
+    )
+    typer.echo(manifest.canonical_json())
+
+
+@app.command("prepare-dpo-holdout")
+def prepare_dpo_holdout_command(
+    source_parquet: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    training_manifest: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    tokenizer: Annotated[Path, typer.Argument(exists=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option()] = Path(
+        "artifacts/post-training/ultrafeedback-binarized-holdout"
+    ),
+    target_pairs: Annotated[int | None, typer.Option(min=1)] = None,
+) -> None:
+    """Prepare preference pairs excluded from the deterministic DPO training mix."""
+
+    from lm_from_zero.post_training.preference_dataset import (
+        prepare_preference_holdout,
+    )
+
+    manifest = prepare_preference_holdout(
+        source_parquet,
+        training_manifest,
+        output,
+        tokenizer,
+        target_pairs=target_pairs,
     )
     typer.echo(manifest.canonical_json())
 

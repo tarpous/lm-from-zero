@@ -30,6 +30,7 @@ PREFERENCE_SOURCE_SPLIT: Final = "train_prefs"
 PREFERENCE_SOURCE_FILE: Final = "data/train_prefs-00000-of-00001.parquet"
 PREFERENCE_RECORD_FORMAT: Final = "lm-from-zero-preference-record"
 PREFERENCE_MANIFEST_FORMAT: Final = "lm-from-zero-preference-mix-manifest"
+PREFERENCE_HOLDOUT_MANIFEST_FORMAT: Final = "lm-from-zero-preference-holdout-manifest"
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 REVISION_PATTERN = r"^[0-9a-f]{40,64}$"
 
@@ -97,6 +98,57 @@ class PreferenceMixManifest(BaseModel):
 
     def canonical_json(self) -> str:
         """Return the stable manifest encoding."""
+
+        return json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+class PreferenceHoldoutManifest(BaseModel):
+    """Manifest for a deterministic preference split excluded from DPO training."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+
+    format: Literal["lm-from-zero-preference-holdout-manifest"] = (
+        PREFERENCE_HOLDOUT_MANIFEST_FORMAT
+    )
+    format_version: Literal[1] = 1
+    dataset_id: Literal["HuggingFaceH4/ultrafeedback_binarized"] = PREFERENCE_DATASET_ID
+    dataset_revision: Annotated[str, Field(pattern=REVISION_PATTERN)] = (
+        PREFERENCE_DATASET_REVISION
+    )
+    source_split: Literal["train_prefs"] = PREFERENCE_SOURCE_SPLIT
+    source_file: Literal["data/train_prefs-00000-of-00001.parquet"] = (
+        PREFERENCE_SOURCE_FILE
+    )
+    source_file_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    train_manifest_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    train_records_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    tokenizer_hash: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    chat_template_hash: Annotated[str, Field(pattern=SHA256_PATTERN)]
+    max_length: Annotated[int, Field(gt=1)] = 1_024
+    truncation_policy: Literal["left"] = "left"
+    selection_seed: int
+    selection_policy: Literal["prompt_id_sha256_ascending"] = (
+        "prompt_id_sha256_ascending"
+    )
+    source_rows: Annotated[int, Field(ge=0)]
+    valid_pairs: Annotated[int, Field(ge=0)]
+    rejected_rows: Annotated[int, Field(ge=0)]
+    excluded_pairs: Annotated[int, Field(gt=0)]
+    target_pairs: Annotated[int, Field(gt=0)]
+    selected_pairs: Annotated[int, Field(gt=0)]
+    truncated_pairs: Annotated[int, Field(ge=0)]
+    chosen_truncated_pairs: Annotated[int, Field(ge=0)]
+    rejected_truncated_pairs: Annotated[int, Field(ge=0)]
+    records_jsonl: Literal["records.jsonl"] = "records.jsonl"
+    records_sha256: Annotated[str, Field(pattern=SHA256_PATTERN)]
+
+    def canonical_json(self) -> str:
+        """Return the stable holdout manifest encoding."""
 
         return json.dumps(
             self.model_dump(mode="json"),
@@ -235,6 +287,79 @@ def _canonical_record_line(record: PreferenceRecord) -> bytes:
     )
 
 
+def _collect_candidates(
+    source_path: Path,
+    tokenizer: ByteBPE,
+    *,
+    max_length: int,
+    selection_seed: int,
+    loader: Callable[[Path], Iterable[Mapping[str, object]]] | None,
+) -> tuple[list[_Candidate], int, int]:
+    candidates: list[_Candidate] = []
+    source_rows = 0
+    rejected_rows = 0
+    rows = _parquet_rows(source_path) if loader is None else loader(source_path)
+    for source_index, row in enumerate(rows):
+        source_rows += 1
+        try:
+            record = _record_from_row(row, source_index=source_index)
+            rendered = render_preference_pair(
+                record.pair,
+                tokenizer,
+                max_length=max_length,
+                truncation="left",
+            )
+        except (DPOFormatError, PreferenceDatasetError, TypeError, ValueError):
+            rejected_rows += 1
+            continue
+        rank = sha256(
+            f"{selection_seed}:{record.prompt_id}:{source_index}".encode()
+        ).hexdigest()
+        candidates.append(
+            _Candidate(
+                rank=rank,
+                record=record,
+                chosen_truncated=rendered.chosen.truncated,
+                rejected_truncated=rendered.rejected.truncated,
+            )
+        )
+    return candidates, source_rows, rejected_rows
+
+
+def _write_records(
+    output: Path,
+    selected: list[_Candidate],
+) -> tuple[str, int, int, int]:
+    output.mkdir(parents=True, exist_ok=True)
+    records_path = output / "records.jsonl"
+    records_temporary = records_path.with_name(f".{records_path.name}.tmp")
+    if records_temporary.exists():
+        raise PreferenceDatasetError(
+            f"incomplete preference records exists: {records_temporary}"
+        )
+    digest = sha256()
+    try:
+        with records_temporary.open("xb") as handle:
+            for candidate in selected:
+                line = _canonical_record_line(candidate.record)
+                handle.write(line)
+                digest.update(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(records_temporary, records_path)
+    except Exception:
+        records_temporary.unlink(missing_ok=True)
+        raise
+    chosen_truncated_pairs = sum(item.chosen_truncated for item in selected)
+    rejected_truncated_pairs = sum(item.rejected_truncated for item in selected)
+    return (
+        digest.hexdigest(),
+        sum(item.chosen_truncated or item.rejected_truncated for item in selected),
+        chosen_truncated_pairs,
+        rejected_truncated_pairs,
+    )
+
+
 def prepare_preference_mix(
     source_parquet: str | Path,
     output_directory: str | Path,
@@ -264,34 +389,13 @@ def prepare_preference_mix(
             f"cannot load preference tokenizer: {error}"
         ) from error
 
-    candidates: list[_Candidate] = []
-    source_rows = 0
-    rejected_rows = 0
-    rows = _parquet_rows(source_path) if loader is None else loader(source_path)
-    for source_index, row in enumerate(rows):
-        source_rows += 1
-        try:
-            record = _record_from_row(row, source_index=source_index)
-            rendered = render_preference_pair(
-                record.pair,
-                tokenizer,
-                max_length=max_length,
-                truncation="left",
-            )
-        except (DPOFormatError, PreferenceDatasetError, TypeError, ValueError):
-            rejected_rows += 1
-            continue
-        rank = sha256(
-            f"{selection_seed}:{record.prompt_id}:{source_index}".encode()
-        ).hexdigest()
-        candidates.append(
-            _Candidate(
-                rank=rank,
-                record=record,
-                chosen_truncated=rendered.chosen.truncated,
-                rejected_truncated=rendered.rejected.truncated,
-            )
-        )
+    candidates, source_rows, rejected_rows = _collect_candidates(
+        source_path,
+        tokenizer,
+        max_length=max_length,
+        selection_seed=selection_seed,
+        loader=loader,
+    )
 
     if len(candidates) < target_pairs:
         raise PreferenceDatasetError(
@@ -304,30 +408,13 @@ def prepare_preference_mix(
     )[:target_pairs]
 
     output = Path(output_directory)
-    output.mkdir(parents=True, exist_ok=True)
-    records_path = output / "records.jsonl"
+    (
+        records_digest,
+        truncated_pairs,
+        chosen_truncated_pairs,
+        rejected_truncated_pairs,
+    ) = _write_records(output, selected)
     manifest_path = output / "manifest.json"
-    records_temporary = records_path.with_name(f".{records_path.name}.tmp")
-    if records_temporary.exists():
-        raise PreferenceDatasetError(
-            f"incomplete preference records exists: {records_temporary}"
-        )
-    digest = sha256()
-    try:
-        with records_temporary.open("xb") as handle:
-            for candidate in selected:
-                line = _canonical_record_line(candidate.record)
-                handle.write(line)
-                digest.update(line)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(records_temporary, records_path)
-    except Exception:
-        records_temporary.unlink(missing_ok=True)
-        raise
-
-    chosen_truncated_pairs = sum(item.chosen_truncated for item in selected)
-    rejected_truncated_pairs = sum(item.rejected_truncated for item in selected)
     manifest = PreferenceMixManifest(
         source_file_sha256=_sha256_file(source_path),
         tokenizer_hash=tokenizer.model_hash,
@@ -339,12 +426,124 @@ def prepare_preference_mix(
         valid_pairs=len(candidates),
         rejected_rows=rejected_rows,
         selected_pairs=len(selected),
-        truncated_pairs=sum(
-            item.chosen_truncated or item.rejected_truncated for item in selected
-        ),
+        truncated_pairs=truncated_pairs,
         chosen_truncated_pairs=chosen_truncated_pairs,
         rejected_truncated_pairs=rejected_truncated_pairs,
-        records_sha256=digest.hexdigest(),
+        records_sha256=records_digest,
     )
     _atomic_write(manifest_path, (manifest.canonical_json() + "\n").encode())
+    return manifest
+
+
+def prepare_preference_holdout(
+    source_parquet: str | Path,
+    training_manifest_path: str | Path,
+    output_directory: str | Path,
+    tokenizer_path: str | Path,
+    *,
+    target_pairs: int | None = None,
+    loader: Callable[[Path], Iterable[Mapping[str, object]]] | None = None,
+) -> PreferenceHoldoutManifest:
+    """Prepare all or a deterministic prefix of pairs excluded from DPO training."""
+
+    source_path = Path(source_parquet)
+    train_manifest_file = Path(training_manifest_path)
+    tokenizer_file = Path(tokenizer_path)
+    output = Path(output_directory)
+    if not source_path.is_file():
+        raise PreferenceDatasetError(
+            f"preference parquet does not exist: {source_path}"
+        )
+    if not train_manifest_file.is_file():
+        raise PreferenceDatasetError(
+            f"training preference manifest does not exist: {train_manifest_file}"
+        )
+    if not tokenizer_file.is_file():
+        raise PreferenceDatasetError(f"tokenizer does not exist: {tokenizer_file}")
+    if output.resolve() == train_manifest_file.parent.resolve():
+        raise PreferenceDatasetError("holdout output must differ from training mix")
+    try:
+        tokenizer = ByteBPE.load(tokenizer_file)
+        train_manifest = PreferenceMixManifest.model_validate_json(
+            train_manifest_file.read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as error:
+        raise PreferenceDatasetError(
+            f"cannot load preference training artifacts: {error}"
+        ) from error
+    source_hash = _sha256_file(source_path)
+    if source_hash != train_manifest.source_file_sha256:
+        raise PreferenceDatasetError("source parquet does not match training manifest")
+    if tokenizer.model_hash != train_manifest.tokenizer_hash:
+        raise PreferenceDatasetError("tokenizer does not match training manifest")
+    if train_manifest.chat_template_hash != DEFAULT_CHAT_TEMPLATE.template_hash:
+        raise PreferenceDatasetError("training manifest chat template is unsupported")
+    train_records_path = train_manifest_file.parent / train_manifest.records_jsonl
+    if _sha256_file(train_records_path) != train_manifest.records_sha256:
+        raise PreferenceDatasetError(
+            "training preference records do not match manifest"
+        )
+    excluded_keys: set[tuple[int, str]] = set()
+    record_count = 0
+    with train_records_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            record = PreferenceRecord.model_validate_json(line)
+            excluded_keys.add((record.source_index, record.prompt_id))
+            record_count += 1
+    if record_count != train_manifest.selected_pairs:
+        raise PreferenceDatasetError("training record count disagrees with manifest")
+
+    candidates, source_rows, rejected_rows = _collect_candidates(
+        source_path,
+        tokenizer,
+        max_length=train_manifest.max_length,
+        selection_seed=train_manifest.selection_seed,
+        loader=loader,
+    )
+    ordered = sorted(
+        (
+            candidate
+            for candidate in candidates
+            if (candidate.record.source_index, candidate.record.prompt_id)
+            not in excluded_keys
+        ),
+        key=lambda item: (item.rank, item.record.prompt_id, item.record.source_index),
+    )
+    if target_pairs is None:
+        target_pairs = len(ordered)
+    if target_pairs <= 0:
+        raise PreferenceDatasetError("target_pairs must be positive")
+    if len(ordered) < target_pairs:
+        raise PreferenceDatasetError(
+            f"source yielded {len(ordered)} holdout pairs, requested {target_pairs}"
+        )
+    selected = ordered[:target_pairs]
+    (
+        records_digest,
+        truncated_pairs,
+        chosen_truncated_pairs,
+        rejected_truncated_pairs,
+    ) = _write_records(output, selected)
+    manifest = PreferenceHoldoutManifest(
+        source_file_sha256=source_hash,
+        train_manifest_sha256=_sha256_file(train_manifest_file),
+        train_records_sha256=train_manifest.records_sha256,
+        tokenizer_hash=tokenizer.model_hash,
+        chat_template_hash=DEFAULT_CHAT_TEMPLATE.template_hash,
+        max_length=train_manifest.max_length,
+        selection_seed=train_manifest.selection_seed,
+        source_rows=source_rows,
+        valid_pairs=len(candidates),
+        rejected_rows=rejected_rows,
+        excluded_pairs=record_count,
+        target_pairs=target_pairs,
+        selected_pairs=len(selected),
+        truncated_pairs=truncated_pairs,
+        chosen_truncated_pairs=chosen_truncated_pairs,
+        rejected_truncated_pairs=rejected_truncated_pairs,
+        records_sha256=records_digest,
+    )
+    _atomic_write(output / "manifest.json", (manifest.canonical_json() + "\n").encode())
     return manifest

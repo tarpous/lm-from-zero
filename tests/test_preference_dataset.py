@@ -6,13 +6,18 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock, patch
 
 from pydantic import ValidationError
+from typer.testing import CliRunner
 
+from lm_from_zero.cli import app
 from lm_from_zero.post_training.preference_dataset import (
     PREFERENCE_DATASET_REVISION,
     PreferenceDatasetError,
+    PreferenceHoldoutManifest,
     PreferenceMixManifest,
+    prepare_preference_holdout,
     prepare_preference_mix,
 )
 from lm_from_zero.tokenizer.bpe import ByteBPE
@@ -136,6 +141,98 @@ class PreferenceDatasetTests(unittest.TestCase):
                     "format_version": 1,
                     "objective": "dpo",
                 }
+            )
+
+    def test_holdout_excludes_training_records_deterministically(self) -> None:
+        rows = [_row(index) for index in range(8)]
+
+        def loader(_: Path) -> list[dict[str, Any]]:
+            return rows
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "train_prefs.parquet"
+            source.write_bytes(b"test parquet placeholder")
+            tokenizer_path = root / "tokenizer.json"
+            ByteBPE().save(tokenizer_path)
+            train = prepare_preference_mix(
+                source,
+                root / "train",
+                tokenizer_path,
+                target_pairs=5,
+                selection_seed=2027,
+                loader=loader,
+            )
+            holdout = prepare_preference_holdout(
+                source,
+                root / "train" / "manifest.json",
+                root / "holdout",
+                tokenizer_path,
+                loader=loader,
+            )
+            train_keys = {
+                (json.loads(line)["source_index"], json.loads(line)["prompt_id"])
+                for line in (root / "train" / "records.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            }
+            holdout_records = [
+                json.loads(line)
+                for line in (root / "holdout" / "records.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+            self.assertEqual(holdout.format, "lm-from-zero-preference-holdout-manifest")
+            self.assertEqual(holdout.train_records_sha256, train.records_sha256)
+            self.assertEqual(holdout.excluded_pairs, 5)
+            self.assertEqual(holdout.selected_pairs, 3)
+            self.assertTrue(
+                all(
+                    (record["source_index"], record["prompt_id"]) not in train_keys
+                    for record in holdout_records
+                )
+            )
+            loaded = PreferenceHoldoutManifest.model_validate_json(
+                (root / "holdout" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(loaded.records_sha256, holdout.records_sha256)
+
+    def test_holdout_cli_passes_the_bound_artifacts_to_the_preparer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "train_prefs.parquet"
+            training_manifest = root / "train-manifest.json"
+            tokenizer = root / "tokenizer.json"
+            for path in (source, training_manifest, tokenizer):
+                path.write_bytes(b"placeholder")
+            prepared = Mock()
+            prepared.canonical_json.return_value = "{}"
+            with patch(
+                "lm_from_zero.post_training.preference_dataset."
+                "prepare_preference_holdout",
+                return_value=prepared,
+            ) as prepare:
+                result = CliRunner().invoke(
+                    app,
+                    [
+                        "prepare-dpo-holdout",
+                        str(source),
+                        str(training_manifest),
+                        str(tokenizer),
+                        "--output",
+                        str(root / "holdout"),
+                        "--target-pairs",
+                        "3",
+                    ],
+                )
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertEqual(result.stdout.strip(), "{}")
+            prepare.assert_called_once_with(
+                source,
+                training_manifest,
+                root / "holdout",
+                tokenizer,
+                target_pairs=3,
             )
 
 
