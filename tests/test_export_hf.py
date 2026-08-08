@@ -22,12 +22,14 @@ from lm_from_zero.cli import app
 from lm_from_zero.export_hf import (
     EXPORT_MANIFEST_FILENAME,
     ExportError,
+    _DenseExportSource,
     _mapped_hugging_face_model,
     dense_tensor_name_map,
     export_dense_to_hugging_face,
     load_export_manifest,
 )
 from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
+from lm_from_zero.post_training.preference_evaluation import DPOPolicyForInference
 from lm_from_zero.tokenizer.bpe import BYTE_TOKEN_OFFSET, ByteBPE
 from lm_from_zero.tokenizer.pipeline import (
     TokenizerTrainingConfig,
@@ -286,6 +288,74 @@ class HuggingFaceExportTests(unittest.TestCase):
                     exported_next.logits[:, -1].argmax(dim=-1),
                 )
             )
+
+    def test_dpo_checkpoint_dispatches_to_validated_export_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            training_path, tokenizer = _tokenizer_artifact(root)
+            checkpoint, internal = _checkpoint(root, tokenizer)
+            (checkpoint / "manifest.json").write_text(
+                '{"format":"lm-from-zero-dpo-checkpoint"}',
+                encoding="utf-8",
+            )
+            source = _DenseExportSource(
+                model=internal,
+                checkpoint_id="step-000000000001",
+                checkpoint_manifest_sha256="a" * 64,
+                checkpoint_format="lm-from-zero-dpo-checkpoint",
+                model_config_sha256=internal.config.config_hash,
+                tokenizer_sha256=tokenizer.model_hash,
+            )
+            output = root / "export"
+            with patch(
+                "lm_from_zero.export_hf._load_dpo_export_source",
+                return_value=source,
+            ) as loader:
+                manifest = export_dense_to_hugging_face(
+                    checkpoint,
+                    training_path,
+                    output,
+                )
+            loader.assert_called_once_with(checkpoint, tokenizer)
+            self.assertEqual(
+                manifest.source_checkpoint_format,
+                "lm-from-zero-dpo-checkpoint",
+            )
+            self.assertEqual(manifest.source_checkpoint_id, source.checkpoint_id)
+
+    def test_native_generation_dispatches_to_validated_dpo_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            training_path, tokenizer = _tokenizer_artifact(root)
+            checkpoint, internal = _checkpoint(root, tokenizer)
+            (checkpoint / "manifest.json").write_text(
+                '{"format":"lm-from-zero-dpo-checkpoint"}',
+                encoding="utf-8",
+            )
+            policy = DPOPolicyForInference(
+                model=internal,
+                checkpoint_id="step-000000000001",
+                checkpoint_manifest_sha256="a" * 64,
+                model_config_sha256=internal.config.config_hash,
+                model_variant="baseline",
+            )
+            with patch(
+                "lm_from_zero.post_training.preference_evaluation.load_final_dpo_policy",
+                return_value=policy,
+            ) as loader:
+                result = CliRunner().invoke(
+                    app,
+                    [
+                        "generate-dense",
+                        str(checkpoint),
+                        str(training_path),
+                        "hello",
+                        "--max-new-tokens",
+                        "1",
+                    ],
+                )
+            self.assertEqual(result.exit_code, 0, result.output)
+            loader.assert_called_once_with(checkpoint, tokenizer)
 
     def test_rejects_mismatches_existing_destinations_and_corruption(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

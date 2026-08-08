@@ -19,7 +19,7 @@ from torch import Tensor
 from tqdm import tqdm  # type: ignore[import-untyped]
 
 from lm_from_zero.generation import CausalGenerationConfig, generate_causal
-from lm_from_zero.models import Olmo2Config, Olmo2ForCausalLM
+from lm_from_zero.models import DenseModelVariant, Olmo2Config, Olmo2ForCausalLM
 from lm_from_zero.post_training.chat import DEFAULT_CHAT_TEMPLATE
 from lm_from_zero.post_training.dpo import dpo_objective, masked_sequence_logprob
 from lm_from_zero.post_training.dpo_train import (
@@ -190,6 +190,17 @@ class _LoadedModel:
     checkpoint_id: str
     checkpoint_manifest_sha256: str
     model_config_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class DPOPolicyForInference:
+    """A validated final DPO policy suitable for local inference or export."""
+
+    model: Olmo2ForCausalLM
+    checkpoint_id: str
+    checkpoint_manifest_sha256: str
+    model_config_sha256: str
+    model_variant: DenseModelVariant
 
 
 @dataclass(slots=True)
@@ -494,6 +505,45 @@ def _load_dpo_policy(
             model_config_sha256=checkpoint_manifest.model_config_sha256,
         ),
         run_manifest,
+    )
+
+
+def load_final_dpo_policy(
+    checkpoint_path: str | Path,
+    tokenizer: ByteBPE,
+) -> DPOPolicyForInference:
+    """Validate a final DPO policy and every bound SFT/pretraining artifact."""
+
+    checkpoint = Path(checkpoint_path)
+    if checkpoint.parent.name != "checkpoints":
+        raise PreferenceEvaluationError(
+            "DPO inference requires a checkpoint under its run checkpoints"
+        )
+    run_root = checkpoint.parent.parent
+    try:
+        run_manifest = DPORunManifest.model_validate_json(
+            (run_root / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError) as error:
+        raise PreferenceEvaluationError("DPO run manifest is invalid") from error
+    source_sft_checkpoint = _resolve_project_path(
+        run_manifest.source_sft_checkpoint_directory
+    )
+    reference = _load_sft_reference(source_sft_checkpoint.parent.parent, tokenizer)
+    policy, validated_run_manifest = _load_dpo_policy(run_root, tokenizer, reference)
+    expected_checkpoint = (
+        run_root / "checkpoints" / validated_run_manifest.final_checkpoint_id
+    )
+    if checkpoint.resolve() != expected_checkpoint.resolve():
+        raise PreferenceEvaluationError(
+            "DPO inference requires the run's complete final checkpoint"
+        )
+    return DPOPolicyForInference(
+        model=policy.model,
+        checkpoint_id=policy.checkpoint_id,
+        checkpoint_manifest_sha256=policy.checkpoint_manifest_sha256,
+        model_config_sha256=policy.model_config_sha256,
+        model_variant=validated_run_manifest.model_variant,
     )
 
 

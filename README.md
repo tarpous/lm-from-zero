@@ -793,6 +793,14 @@ response-token forward KL `0.023786`. Both checkpoint summaries cover all
 contract. The report also contains the fixed three-prompt behavior panel and
 complete artifact lineage bindings.
 
+The final DPO policy is also exported locally as a standard
+`Olmo2ForCausalLM` package at
+`artifacts/exports/zero-20m-dpo-hybrid-muon/`. Its export manifest binds the
+completed DPO checkpoint `step-000000025000` and reports all 20,159,104
+parameters with exact fp32 logits parity (`0.0` maximum absolute error). The
+exporter and native dense-generation command accept a final DPO checkpoint
+only after validating its complete DPO, SFT, and pretraining lineage.
+
 ## Training checkpoints
 
 Each published recovery point is an immutable directory under an ignored

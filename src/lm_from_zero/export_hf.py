@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Literal
@@ -55,6 +56,21 @@ class ExportError(RuntimeError):
     """Raised when an export cannot satisfy its compatibility contract."""
 
 
+@dataclass(frozen=True, slots=True)
+class _DenseExportSource:
+    """Validated dense weights and provenance accepted by the exporter."""
+
+    model: Olmo2ForCausalLM
+    checkpoint_id: str
+    checkpoint_manifest_sha256: str
+    checkpoint_format: Literal[
+        "lm-from-zero-training-checkpoint",
+        "lm-from-zero-dpo-checkpoint",
+    ]
+    model_config_sha256: str
+    tokenizer_sha256: str
+
+
 class ExportArtifact(BaseModel):
     """Integrity metadata for one exported Hugging Face file."""
 
@@ -85,6 +101,10 @@ class DenseHFExportManifest(BaseModel):
     architecture: Literal["Olmo2ForCausalLM"] = "Olmo2ForCausalLM"
     source_checkpoint_id: str = Field(pattern=r"^step-[0-9]{12}$")
     source_checkpoint_manifest_sha256: Sha256
+    source_checkpoint_format: Literal[
+        "lm-from-zero-training-checkpoint",
+        "lm-from-zero-dpo-checkpoint",
+    ] = "lm-from-zero-training-checkpoint"
     model_config_sha256: Sha256
     tokenizer_sha256: Sha256
     parameter_count: Annotated[int, Field(gt=0)]
@@ -350,14 +370,9 @@ def _publish_directory(temporary: Path, destination: Path) -> None:
     os.replace(temporary, destination)
 
 
-def export_dense_to_hugging_face(
-    checkpoint_directory: str | Path,
-    tokenizer_training_manifest: str | Path,
-    output_directory: str | Path,
-) -> DenseHFExportManifest:
-    """Validate, convert, parity-check, and atomically publish a dense export."""
+def _load_training_export_source(checkpoint_path: Path) -> _DenseExportSource:
+    """Load a standard training checkpoint under the dense export contract."""
 
-    checkpoint_path = Path(checkpoint_directory)
     validated_checkpoint = _validate_checkpoint(checkpoint_path)
     checkpoint = validated_checkpoint.manifest
     scheduler_state = validated_checkpoint.scheduler_state
@@ -384,24 +399,103 @@ def export_dense_to_hugging_face(
     if model_config.tokenizer_hash != checkpoint.binding.tokenizer_sha256:
         raise ExportError("checkpoint tokenizer binding is inconsistent")
 
-    training_path = Path(tokenizer_training_manifest)
-    training = load_training_manifest(training_path)
-    if training.status != "complete":
-        raise ExportError("tokenizer training must be complete before export")
-    if training.tokenizer_hash != checkpoint.binding.tokenizer_sha256:
-        raise ExportError("tokenizer manifest does not match the checkpoint")
-    if training.realized_vocab_size != model_config.vocab_size:
-        raise ExportError("tokenizer vocabulary does not match the model")
-    tokenizer = ByteBPE.load(training_path.parent / training.tokenizer_file)
-    if tokenizer.model_hash != training.tokenizer_hash:
-        raise ExportError("tokenizer file hash does not match its manifest")
-
     source_model = Olmo2ForCausalLM(model_config)
     load_checkpoint_model(
         checkpoint_path,
         model=source_model,
         expected_binding=checkpoint.binding,
     )
+    return _DenseExportSource(
+        model=source_model,
+        checkpoint_id=checkpoint.lineage.checkpoint_id,
+        checkpoint_manifest_sha256=sha256(checkpoint.canonical_bytes()).hexdigest(),
+        checkpoint_format="lm-from-zero-training-checkpoint",
+        model_config_sha256=model_config.config_hash,
+        tokenizer_sha256=checkpoint.binding.tokenizer_sha256,
+    )
+
+
+def _load_dpo_export_source(
+    checkpoint_path: Path,
+    tokenizer: ByteBPE,
+) -> _DenseExportSource:
+    """Load a final DPO policy only after validating its complete SFT lineage."""
+
+    if checkpoint_path.parent.name != "checkpoints":
+        raise ExportError("DPO export requires a checkpoint under its run checkpoints")
+    from lm_from_zero.post_training.preference_evaluation import (
+        DPOPolicyForInference,
+        PreferenceEvaluationError,
+        load_final_dpo_policy,
+    )
+
+    try:
+        policy: DPOPolicyForInference = load_final_dpo_policy(
+            checkpoint_path,
+            tokenizer,
+        )
+    except (OSError, PreferenceEvaluationError, ValueError) as error:
+        raise ExportError("DPO checkpoint lineage is invalid") from error
+    if policy.model_variant != "baseline":
+        raise ExportError(
+            "standard dense Hugging Face export supports only the baseline "
+            "model variant"
+        )
+    if policy.model.config.config_hash != policy.model_config_sha256:
+        raise ExportError("DPO model configuration hash does not match its policy")
+    return _DenseExportSource(
+        model=policy.model,
+        checkpoint_id=policy.checkpoint_id,
+        checkpoint_manifest_sha256=policy.checkpoint_manifest_sha256,
+        checkpoint_format="lm-from-zero-dpo-checkpoint",
+        model_config_sha256=policy.model_config_sha256,
+        tokenizer_sha256=tokenizer.model_hash,
+    )
+
+
+def _load_dense_export_source(
+    checkpoint_path: Path,
+    tokenizer: ByteBPE,
+) -> _DenseExportSource:
+    """Dispatch only supported checkpoint formats to their strict loaders."""
+
+    try:
+        checkpoint_format = json.loads(
+            (checkpoint_path / "manifest.json").read_text(encoding="utf-8")
+        ).get("format")
+    except (OSError, ValueError) as error:
+        raise ExportError("checkpoint manifest is invalid") from error
+    if checkpoint_format == "lm-from-zero-dpo-checkpoint":
+        return _load_dpo_export_source(checkpoint_path, tokenizer)
+    return _load_training_export_source(checkpoint_path)
+
+
+def export_dense_to_hugging_face(
+    checkpoint_directory: str | Path,
+    tokenizer_training_manifest: str | Path,
+    output_directory: str | Path,
+) -> DenseHFExportManifest:
+    """Validate, convert, parity-check, and atomically publish a dense export."""
+
+    training_path = Path(tokenizer_training_manifest)
+    training = load_training_manifest(training_path)
+    if training.status != "complete":
+        raise ExportError("tokenizer training must be complete before export")
+    tokenizer = ByteBPE.load(training_path.parent / training.tokenizer_file)
+    source = _load_dense_export_source(Path(checkpoint_directory), tokenizer)
+    model_config = source.model.config
+    if training.tokenizer_hash != source.tokenizer_sha256:
+        raise ExportError("tokenizer manifest does not match the checkpoint")
+    if tokenizer.model_hash != training.tokenizer_hash:
+        raise ExportError("tokenizer file hash does not match its manifest")
+    if model_config.tokenizer_hash != source.tokenizer_sha256:
+        raise ExportError("checkpoint tokenizer binding is inconsistent")
+    if training.realized_vocab_size != model_config.vocab_size:
+        raise ExportError("tokenizer vocabulary does not match the model")
+    if model_config.config_hash != source.model_config_sha256:
+        raise ExportError("checkpoint model configuration hash mismatch")
+
+    source_model = source.model
     hugging_face_model, tensor_map = _mapped_hugging_face_model(source_model)
     maximum_error = _verify_fp32_logits(source_model, hugging_face_model)
     hugging_face_tokenizer = _hugging_face_tokenizer(
@@ -444,10 +538,9 @@ def export_dense_to_hugging_face(
         from transformers import __version__ as transformers_version
 
         manifest = DenseHFExportManifest(
-            source_checkpoint_id=checkpoint.lineage.checkpoint_id,
-            source_checkpoint_manifest_sha256=sha256(
-                checkpoint.canonical_bytes()
-            ).hexdigest(),
+            source_checkpoint_id=source.checkpoint_id,
+            source_checkpoint_manifest_sha256=source.checkpoint_manifest_sha256,
+            source_checkpoint_format=source.checkpoint_format,
             model_config_sha256=model_config.config_hash,
             tokenizer_sha256=tokenizer.model_hash,
             parameter_count=source_model.trainable_parameter_count(),

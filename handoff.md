@@ -41,10 +41,19 @@ forward KL of `0.023786`. Both checkpoint summaries cover all 10,700 pairs;
 also contains the fixed three-prompt behavior panel and complete checkpoint,
 manifest, and configuration bindings.
 
-The next phase is offline closeout of these local changes, followed by the
-usual explicit commit and push gate. The full report and smoke report are
-local generated evidence; raw data, checkpoints, and other runtime artifacts
-remain outside Git.
+The local Hugging Face export at
+`artifacts/exports/zero-20m-dpo-hybrid-muon/` is bound to final DPO checkpoint
+`step-000000025000`, has 20,159,104 parameters, and passed exact fp32 logits
+parity with maximum absolute error `0.0`. `export-dense-hf` and
+`generate-dense` now validate the complete DPO, SFT, and pretraining lineage
+when given the final DPO checkpoint, rather than attempting to parse it as a
+pretraining checkpoint. The export manifest records the DPO source format and
+manifest hash.
+
+The next phase is the isolated local-serving environment. Do not install or
+download vLLM, llama.cpp, GGUF tooling, or other runtime dependencies without
+separate approval. The full report, smoke report, checkpoints, and export stay
+local generated evidence; raw data and runtime artifacts remain outside Git.
 
 The exact smoke command used for the bounded validation was:
 

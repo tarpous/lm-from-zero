@@ -1685,31 +1685,57 @@ def generate_dense_command(
     from lm_from_zero.tokenizer.bpe import ByteBPE
     from lm_from_zero.training import load_checkpoint_model, validate_checkpoint
 
-    checkpoint_manifest = validate_checkpoint(checkpoint)
-    if checkpoint_manifest.binding.architecture != "olmo2":
-        raise DataValidationError(
-            "native dense generation requires an OLMo2 checkpoint"
-        )
-    model_config = Olmo2Config.model_validate(
-        checkpoint_manifest.binding.resolved_model_config
-    )
     training = load_training_manifest(tokenizer_training_manifest)
-    if (
-        training.status != "complete"
-        or training.tokenizer_hash != checkpoint_manifest.binding.tokenizer_sha256
-    ):
-        raise DataValidationError("tokenizer manifest does not match the checkpoint")
+    if training.status != "complete":
+        raise DataValidationError("tokenizer training must be complete")
     tokenizer = ByteBPE.load(
         tokenizer_training_manifest.parent / training.tokenizer_file
     )
     if tokenizer.model_hash != training.tokenizer_hash:
         raise DataValidationError("tokenizer file does not match its manifest")
-    model = Olmo2ForCausalLM(model_config, variant=model_variant)
-    load_checkpoint_model(
-        checkpoint,
-        model=model,
-        expected_binding=checkpoint_manifest.binding,
-    )
+    try:
+        checkpoint_format = json.loads(
+            (checkpoint / "manifest.json").read_text(encoding="utf-8")
+        ).get("format")
+    except (OSError, ValueError) as error:
+        raise DataValidationError("checkpoint manifest is invalid") from error
+    if checkpoint_format == "lm-from-zero-dpo-checkpoint":
+        from lm_from_zero.post_training.preference_evaluation import (
+            PreferenceEvaluationError,
+            load_final_dpo_policy,
+        )
+
+        try:
+            policy = load_final_dpo_policy(checkpoint, tokenizer)
+        except PreferenceEvaluationError as error:
+            raise DataValidationError("DPO checkpoint lineage is invalid") from error
+        if model_variant != policy.model_variant:
+            raise DataValidationError(
+                "requested model variant does not match the DPO checkpoint"
+            )
+        model = policy.model
+        model_config = model.config
+        if model_config.config_hash != policy.model_config_sha256:
+            raise DataValidationError("DPO model configuration hash does not match")
+    else:
+        checkpoint_manifest = validate_checkpoint(checkpoint)
+        if checkpoint_manifest.binding.architecture != "olmo2":
+            raise DataValidationError(
+                "native dense generation requires an OLMo2 checkpoint"
+            )
+        model_config = Olmo2Config.model_validate(
+            checkpoint_manifest.binding.resolved_model_config
+        )
+        if training.tokenizer_hash != checkpoint_manifest.binding.tokenizer_sha256:
+            raise DataValidationError(
+                "tokenizer manifest does not match the checkpoint"
+            )
+        model = Olmo2ForCausalLM(model_config, variant=model_variant)
+        load_checkpoint_model(
+            checkpoint,
+            model=model,
+            expected_binding=checkpoint_manifest.binding,
+        )
     model.to(torch.device(device))
     generation_config = CausalGenerationConfig(
         strategy=strategy,
